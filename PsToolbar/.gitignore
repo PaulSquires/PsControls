@@ -1,0 +1,33 @@
+# FreeBASIC build artifacts
+*.exe
+*.dll
+*.o
+*.obj
+*.a
+*.lib
+*.map
+*.pdb
+
+# Editor / OS cruft
+*.bak
+*~
+Thumbs.db
+desktop.ini
+
+# Internal design / planning notes. NEVER published: these repos are public on
+# GitHub and clients can browse them.
+REFACTOR_PLAN*.md
+
+# Internal development scripts (A/B break harness, screenshot capture) and the
+# transient output of running the demo's self-test.
+_ab_test.py
+_screenshot.ps1
+selftest_out.txt
+ab*.txt
+
+# demo scratch image
+sample_icon.png
+
+# Microsoft's icon font, required by the demo at run time but NOT ours to
+# redistribute. Copy it in locally -- see the README.
+SegoeFluentIcons.ttf

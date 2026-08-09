@@ -1,0 +1,19 @@
+# FreeBASIC build artifacts
+*.exe
+*.dll
+*.o
+*.obj
+*.a
+*.lib
+*.map
+*.pdb
+
+# Editor / OS cruft
+*.bak
+*~
+Thumbs.db
+desktop.ini
+
+# Internal design / planning notes. NEVER published: these repos are public on
+# GitHub and clients can browse them.
+REFACTOR_PLAN*.md

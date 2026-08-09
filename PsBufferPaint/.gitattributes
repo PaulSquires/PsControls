@@ -1,0 +1,27 @@
+# Normalize line endings. Repo stores text as LF; Windows working tree
+# checks out as CRLF (this is a Windows-native FreeBASIC project edited
+# with Windows tools).
+* text=auto
+
+# FreeBASIC / C source and project text files -> CRLF in working tree
+*.bas   text eol=crlf
+*.bi    text eol=crlf
+*.inc   text eol=crlf
+*.c     text eol=crlf
+*.h     text eol=crlf
+*.rc    text eol=crlf
+*.txt   text eol=crlf
+*.md    text eol=crlf
+*.bat   text eol=crlf
+
+# Binary assets - never touch line endings
+*.ttf   binary
+*.exe   binary
+*.dll   binary
+*.o     binary
+*.obj   binary
+*.a     binary
+*.lib   binary
+*.ico   binary
+*.png   binary
+*.bmp   binary

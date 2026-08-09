@@ -1,0 +1,14 @@
+# Internal design docs are never published (family rule)
+REFACTOR_PLAN*.md
+
+# Build artifacts
+*.exe
+*.o
+*.obj
+*.a
+
+# Demo / self-test scratch output (generated at runtime)
+sample.png
+sample.bmp
+__psimage_st.*
+*.log
