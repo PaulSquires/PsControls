@@ -1183,6 +1183,9 @@ declare function PsListTree_FilterMessage( byval pMsg as MSG ptr ) as boolean
 declare function PsListTree_GetScrollBar( byval hListControl as HWND ) as HWND
 declare sub      PsListTree_SetScrollBarWidth( byval hListControl as HWND, byval nWidth as integer )
 declare sub      PsListTree_SetScrollBarColors( byval hListControl as HWND, byval backclr as COLORREF, byval foreclr as COLORREF, byval foreclrhot as COLORREF )
+' A one-pixel rule down the scrollbar's left edge, separating it from the rows. Off by
+' default. Pass-through to PsVScrollBar_SetDividerColor.
+declare sub      PsListTree_SetScrollBarDividerColor( byval hListControl as HWND, byval clr as COLORREF, byval bShow as boolean = true )
 declare sub      PsListTree_SetScrollBarPaintCallback( byval hListControl as HWND, byval usersub as VScrollPaintCallbackSub )
 
 ' ----------------------------------------------------------------------------------------

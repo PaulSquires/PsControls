@@ -1356,6 +1356,12 @@ sub PsListTree_SetScrollBarColors( byval hListControl as HWND, byval backclr as 
     if pList->hScrollBar then PsVScrollBar_SetColors( pList->hScrollBar, backclr, foreclr, foreclrhot )
 end sub
 
+sub PsListTree_SetScrollBarDividerColor( byval hListControl as HWND, byval clr as COLORREF, byval bShow as boolean = true )
+    dim as PSLISTTREE ptr pList = GetListTreePointer(hListControl)
+    if pList = null then return
+    if pList->hScrollBar then PsVScrollBar_SetDividerColor( pList->hScrollBar, clr, bShow )
+end sub
+
 sub PsListTree_SetScrollBarPaintCallback( byval hListControl as HWND, byval usersub as VScrollPaintCallbackSub )
     dim as PSLISTTREE ptr pList = GetListTreePointer(hListControl)
     if pList = null then return
@@ -1922,6 +1928,16 @@ sub PsListTree_OnScrollBarScroll( byval hSB as HWND, byval newPos as integer )
     ' not re-enter the callback.
     dim as integer actual = PsListTree_SetTopVis( pList, newPos )
     if actual <> newPos then PsVScrollBar_SetPos( hSB, actual )
+
+    ' FORCE THE ROWS OUT NOW. SetTopVis only invalidates, and a thumb drag keeps the
+    ' queue full of WM_MOUSEMOVE, so the surface's WM_PAINT is starved exactly when the
+    ' user is watching it -- the thumb moves and the list follows in lurches. The
+    ' scrollbar forces its own repaint for the same reason; this is the other half.
+    '
+    ' Only on the SCROLLBAR path. The wheel and the keyboard arrive one message at a
+    ' time and never outrun the paint, so they are left to the ordinary invalidate.
+    dim as HWND hSurf = GetDlgItem( pList->hWin, pList->idc_ListTree )
+    if hSurf then UpdateWindow( hSurf )
     ' Keep the model's scroll source-of-truth in step with the user's scroll, so a
     ' later rebuild or show re-derives to where the user actually left the list.
     dim as integer modelTop = pList->VisibleToModel( actual )

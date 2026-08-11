@@ -975,6 +975,7 @@ Nothing here is required; the control creates, positions, ranges and auto-hides 
 | `PsListTree_GetScrollBar( h ) as HWND` | The scrollbar child, for direct `PsVScrollBar_*` calls. |
 | `PsListTree_SetScrollBarWidth( h, nWidth )` | Track width in **unscaled** units, DPI-scaled at layout. Clamped to a minimum of 1. Re-lays out immediately. |
 | `PsListTree_SetScrollBarColors( h, backclr, foreclr, foreclrhot )` | Track background, thumb, and thumb-under-cursor. |
+| `PsListTree_SetScrollBarDividerColor( h, clr [, bShow] )` | A one-pixel rule down the scrollbar's **left** edge, separating it from the rows. Off by default. Drawn over the thumb, so the line is continuous. |
 | `PsListTree_SetScrollBarPaintCallback( h, usersub )` | Installs a `VScrollPaintCallbackSub` that draws the bar instead of its built-in painter. |
 
 ### Columns and the header band

@@ -65,6 +65,14 @@ type PSVSCROLLBAR
     BackColor     as COLORREF = BGR(33,37,43)
     ForeColor     as COLORREF = BGR(53,59,69)
     ForeColorHot  as COLORREF = BGR(90,98,112)
+    ' A one-pixel rule down the track's LEFT edge, separating the bar from whatever it
+    ' scrolls. 0 = none, which is the default, so an existing host sees no change.
+    '
+    ' NOT DPI-SCALED HERE: PsBufferPaint.PaintLine scales the pen width it is handed, so
+    ' pre-scaling would apply the factor twice and a hairline would be two pixels at 175%.
+    ' The family rule, and the one no assertion running at 100% can catch.
+    bHasDivider   as boolean  = false
+    DividerColor  as COLORREF = 0
     PaintCallback   as VScrollPaintCallbackSub
     ScrollCallback  as VScrollCallbackSub
 
@@ -149,6 +157,9 @@ declare function PsVScrollBar_GetPos( byval hSB as HWND ) as integer
 declare sub      PsVScrollBar_SetPos( byval hSB as HWND, byval nPosition as integer )
 declare function PsVScrollBar_NeedsThumb( byval hSB as HWND ) as boolean
 declare sub      PsVScrollBar_SetColors( byval hSB as HWND, byval backclr as COLORREF, byval foreclr as COLORREF, byval foreclrhot as COLORREF )
+' The left-edge rule. Call with bShow = false (the default) to remove it again.
+declare sub      PsVScrollBar_SetDividerColor( byval hSB as HWND, byval clr as COLORREF, byval bShow as boolean = true )
+declare function PsVScrollBar_GetDividerColor( byval hSB as HWND ) as COLORREF
 declare sub      PsVScrollBar_SetPaintCallback( byval hSB as HWND, byval usersub as VScrollPaintCallbackSub )
 declare sub      PsVScrollBar_SetScrollCallback( byval hSB as HWND, byval usersub as VScrollCallbackSub )
 
