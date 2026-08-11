@@ -2058,6 +2058,26 @@ sub frmMain_RunSelfTest()
         end if
     end scope
 
+    ' ---- the scrollbar's left divider ---------------------------------------------------
+    ' A state round-trip only. The line is two calls inside the default painter, and what
+    ' this pins is that the PsListTree pass-through actually reaches the scrollbar rather
+    ' than silently doing nothing -- which is the failure a host would never see, because
+    ' "no line" looks exactly like "feature not switched on".
+    scope
+        dim as HWND hDiv = HWND_FRMEXPLORER
+        dim as HWND hSB  = PsListTree_GetScrollBar( hDiv )
+        if hSB = 0 then
+            SelfTest_Check( "scrollbar divider: no scrollbar to ask", false, "GetScrollBar returned 0" )
+        else
+            dim as COLORREF was = PsVScrollBar_GetDividerColor( hSB )
+            PsListTree_SetScrollBarDividerColor( hDiv, BGR(45,45,48) )
+            SelfTest_Check( "SetScrollBarDividerColor reaches the embedded scrollbar", _
+                (PsVScrollBar_GetDividerColor( hSB ) = BGR(45,45,48)), _
+                "got &h" & hex(PsVScrollBar_GetDividerColor( hSB )) )
+            PsListTree_SetScrollBarDividerColor( hDiv, was, false )
+        end if
+    end scope
+
     print "=== self-test complete: " & str(gFailCount) & " failure(s) ==="
 end sub
 

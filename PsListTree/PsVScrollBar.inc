@@ -170,6 +170,13 @@ function PsVScrollBar_OnPaint( byval hwnd as HWND ) as LRESULT
             b.SetBackColor( clr )
             b.PaintRect( @pSB->rcThumb )
         end if
+        ' LAST, over the thumb rather than under it. The thumb spans the full width of the
+        ' track, so a divider drawn first is interrupted wherever the thumb happens to be --
+        ' which reads as a rendering fault rather than as a divider.
+        if pSB->bHasDivider then
+            b.SetPenColor( pSB->DividerColor )
+            b.PaintLine( 1, p.rcClient.left, p.rcClient.top, p.rcClient.left, p.rcClient.bottom )
+        end if
     end if
 
     b.EndDoubleBuffer()
@@ -246,7 +253,14 @@ function PsVScrollBar_WndProc( _
             if newPos <> pSB->nPos then
                 pSB->nPos = newPos
                 pSB->Recalc()
+                ' UPDATEWINDOW, NOT JUST INVALIDATERECT. WM_PAINT is generated only when the
+                ' queue has nothing else in it, and a drag fills the queue with WM_MOUSEMOVE
+                ' -- so the repaint is starved and the thumb visibly trails the cursor,
+                ' several rows behind on a long list. Invalidating more often does not help;
+                ' the paint has to be forced. This is the only path in the control where the
+                ' input rate can outrun the paint rate.
                 InvalidateRect( hwnd, NULL, FALSE )
+                UpdateWindow( hwnd )
                 if pSB->ScrollCallback then pSB->ScrollCallback( hwnd, newPos )
             end if
         else
@@ -428,6 +442,20 @@ sub PsVScrollBar_SetColors( byval hSB as HWND, byval backclr as COLORREF, byval 
     InvalidateRect( hSB, NULL, FALSE )
 end sub
 
+
+sub PsVScrollBar_SetDividerColor( byval hSB as HWND, byval clr as COLORREF, byval bShow as boolean = true )
+    dim as PSVSCROLLBAR ptr pSB = GetVScrollBarPointer(hSB)
+    if pSB = 0 then exit sub
+    pSB->DividerColor = clr
+    pSB->bHasDivider  = bShow
+    InvalidateRect( hSB, NULL, FALSE )
+end sub
+
+function PsVScrollBar_GetDividerColor( byval hSB as HWND ) as COLORREF
+    dim as PSVSCROLLBAR ptr pSB = GetVScrollBarPointer(hSB)
+    if pSB = 0 then return 0
+    return pSB->DividerColor
+end function
 
 sub PsVScrollBar_SetPaintCallback( byval hSB as HWND, byval usersub as VScrollPaintCallbackSub )
     dim as PSVSCROLLBAR ptr pSB = GetVScrollBarPointer(hSB)
