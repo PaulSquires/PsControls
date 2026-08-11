@@ -1722,9 +1722,117 @@ end function
 ' ========================================================================================
 ' Refresh the control.
 ' ========================================================================================
-sub PsListTree_Refresh( byval hListControl as HWND ) 
+sub PsListTree_Refresh( byval hListControl as HWND )
     dim as PSLISTTREE ptr pList = GetListTreePointer(hListControl)
     if pList then pList->Refresh()
+end sub
+
+
+' The VISIBLE-index span covered by MODEL rows first..last, or FALSE when nothing in that
+' model range is currently visible. Bounds arrive in either order.
+'
+' visibleMap is STRICTLY ASCENDING -- RebuildVisibleMap walks the model forwards -- so both
+' ends are a binary search rather than a scan. That matters: ModelToVisible is a linear
+' search, and the obvious implementation of InvalidateRows (call it once per row in the
+' range) would be O(range x visibleCount) on the exact path this whole feature exists to
+' make cheap. SyncViewFromModel's top-row search leans on the same property.
+'
+' `midRow`, not `mid`: MID is a FreeBASIC keyword and `dim as integer mid` is a duplicated
+' definition, which is why the search in SyncViewFromModel spells it that way too.
+private function PsListTree_VisSpanForModelRange( _
+            byval pList as PSLISTTREE ptr, _
+            byval firstRow as integer, _
+            byval lastRow as integer, _
+            byref v1 as integer, _
+            byref v2 as integer _
+            ) as boolean
+
+    v1 = -1 : v2 = -1
+    if pList = 0 then return false
+    if pList->visibleCount < 1 then return false
+
+    if firstRow > lastRow then
+        dim as integer t = firstRow : firstRow = lastRow : lastRow = t
+    end if
+    if lastRow < 0 then return false
+    if firstRow > pList->rowCount - 1 then return false
+    if firstRow < 0 then firstRow = 0
+    if lastRow > pList->rowCount - 1 then lastRow = pList->rowCount - 1
+
+    ' Lowest visible slot whose model row is >= firstRow.
+    dim as integer lo = 0
+    dim as integer hi = pList->visibleCount - 1
+    dim as integer a  = -1
+    do while lo <= hi
+        dim as integer midRow = (lo + hi) \ 2
+        if pList->visibleMap(midRow) >= firstRow then
+            a  = midRow
+            hi = midRow - 1
+        else
+            lo = midRow + 1
+        end if
+    loop
+    if a < 0 then return false
+
+    ' Highest visible slot whose model row is <= lastRow.
+    lo = 0
+    hi = pList->visibleCount - 1
+    dim as integer b = -1
+    do while lo <= hi
+        dim as integer midRow = (lo + hi) \ 2
+        if pList->visibleMap(midRow) <= lastRow then
+            b  = midRow
+            lo = midRow + 1
+        else
+            hi = midRow - 1
+        end if
+    loop
+
+    ' The searches cross when every row in the range is hidden inside a collapsed parent:
+    ' no visible slot falls between the bounds at all.
+    if b < a then return false
+
+    v1 = a : v2 = b
+    return true
+end function
+
+
+' NOTE THE NEIGHBOUR: PsListTree_InvalidateRowsForColumns is a different, private thing --
+' it re-measures rows after a column change. This one is the public per-row repaint.
+sub PsListTree_InvalidateRows( byval hListControl as HWND, byval firstRow as integer, byval lastRow as integer )
+    dim as PSLISTTREE ptr pList = GetListTreePointer(hListControl)
+    if pList = 0 then exit sub
+    dim as HWND hSurf = GetDlgItem( pList->hWin, pList->idc_ListTree )
+    if hSurf = 0 then exit sub
+
+    dim as integer v1, v2
+    if PsListTree_VisSpanForModelRange( pList, firstRow, lastRow, v1, v2 ) = false then exit sub
+
+    dim as integer ih = PsListTree_ItemHeightPx( pList )
+    if ih < 1 then exit sub
+
+    ' The same y arithmetic as PsListTree_VisIndexRect, extended over a span. Deliberately
+    ' not written in terms of it: that answers per row and returns FALSE for one off screen,
+    ' so a span with either end scrolled out would lose the part that IS showing.
+    dim as RECT rcClient : GetClientRect( hSurf, @rcClient )
+    dim as integer y1 = (v1 - pList->nTopVis) * ih
+    dim as integer y2 = (v2 - pList->nTopVis + 1) * ih
+    if y1 < rcClient.top    then y1 = rcClient.top
+    if y2 > rcClient.bottom then y2 = rcClient.bottom
+    if y2 <= y1 then exit sub          ' entirely above or below the viewport
+
+    dim as RECT rc
+    SetRect( @rc, rcClient.left, y1, rcClient.right, y2 )
+
+    ' FALSE, where Refresh passes TRUE. A row paints its own background across its whole
+    ' rect, so erasing first only adds a flash -- and this call is aimed squarely at lists
+    ' that update while the user is looking at them.
+    InvalidateRect( hSurf, @rc, FALSE )
+end sub
+
+
+sub PsListTree_InvalidateRow( byval hListControl as HWND, byval row as integer )
+    PsListTree_InvalidateRows( hListControl, row, row )
 end sub
 
 

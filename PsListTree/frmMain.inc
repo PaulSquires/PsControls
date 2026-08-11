@@ -1861,6 +1861,122 @@ sub frmMain_RunSelfTest()
         end if
     end scope
 
+    ' ---- InvalidateRow / InvalidateRows -------------------------------------------------
+    ' The claim is about the UPDATE REGION, so that is what is read: GetUpdateRect after the
+    ' call, against the row rects captured from the REAL paint path. Nothing here re-derives
+    ' a row's position from RowHeight -- that would assert the arithmetic against itself.
+    '
+    ' ValidateRect before each probe because the self-test never pumps messages, so every
+    ' invalidate in this function accumulates into one region until something clears it.
+    scope
+        dim as HWND hInv  = HWND_FRMEXPLORER
+        dim as HWND hSurf = GetDlgItem( hInv, IDC_FRMMAIN_LISTBOX )
+        if (hInv <> 0) andalso (hSurf <> 0) then
+
+            PsListTree_SetPaintCallback( hInv, @SelfTest_RowCapturePaint )
+
+            dim as boolean bGot1 = SelfTest_GrabRow( hInv, 1 )
+            dim as RECT rcRow1 = gSelfTestRowRc
+            dim as boolean bGot3 = SelfTest_GrabRow( hInv, 3 )
+            dim as RECT rcRow3 = gSelfTestRowRc
+
+            dim as RECT rcU
+
+            if (bGot1 = false) orelse (bGot3 = false) then
+                SelfTest_Check( "InvalidateRow: could not capture the probe rows", false, _
+                    "row1=" & str(bGot1) & " row3=" & str(bGot3) )
+            else
+                ' One row: exactly that row's band, full client width.
+                ValidateRect( hSurf, NULL )
+                PsListTree_InvalidateRow( hInv, 1 )
+                dim as long gotOne = GetUpdateRect( hSurf, @rcU, FALSE )
+                SelfTest_Check( "InvalidateRow marks EXACTLY that row's band", _
+                    (gotOne <> 0) andalso (rcU.top = rcRow1.top) andalso (rcU.bottom = rcRow1.bottom) _
+                    andalso (rcU.left = rcRow1.left) andalso (rcU.right = rcRow1.right), _
+                    "update=" & SelfTest_RectStr( rcU ) & " row=" & SelfTest_RectStr( rcRow1 ) )
+
+                ' A span: from the first row's top to the last row's bottom, one region.
+                ValidateRect( hSurf, NULL )
+                PsListTree_InvalidateRows( hInv, 1, 3 )
+                dim as long gotSpan = GetUpdateRect( hSurf, @rcU, FALSE )
+                SelfTest_Check( "InvalidateRows spans first.top to last.bottom", _
+                    (gotSpan <> 0) andalso (rcU.top = rcRow1.top) andalso (rcU.bottom = rcRow3.bottom), _
+                    "update=" & SelfTest_RectStr( rcU ) & " expected top=" & str(rcRow1.top) & _
+                    " bottom=" & str(rcRow3.bottom) )
+
+                ' Bounds in either order. A caller diffing two ids has no reason to know
+                ' which is the lower model row.
+                ValidateRect( hSurf, NULL )
+                PsListTree_InvalidateRows( hInv, 3, 1 )
+                dim as RECT rcRev
+                dim as long gotRev = GetUpdateRect( hSurf, @rcRev, FALSE )
+                SelfTest_Check( "InvalidateRows accepts its bounds reversed", _
+                    (gotRev <> 0) andalso (rcRev.top = rcU.top) andalso (rcRev.bottom = rcU.bottom), _
+                    "reversed=" & SelfTest_RectStr( rcRev ) & " forward=" & SelfTest_RectStr( rcU ) )
+            end if
+
+            ' Invalid indices are a silent no-op, not a fault and not a whole-client repaint.
+            ' The whole-client case is the one that matters: it would look CORRECT on screen
+            ' and quietly undo the entire point of the call.
+            ValidateRect( hSurf, NULL )
+            PsListTree_InvalidateRow( hInv, -5 )
+            PsListTree_InvalidateRow( hInv, PsListTree_GetCount( hInv ) + 500 )
+            ' Into a variable FIRST. Inlined into the SelfTest_Check argument list the detail
+            ' string printed a stale rect on a passing run -- FreeBASIC does not promise the
+            ' argument evaluation order, so RectStr ran before GetUpdateRect cleared it.
+            dim as long gotBad = GetUpdateRect( hSurf, @rcU, FALSE )
+            SelfTest_Check( "InvalidateRow ignores an out-of-range row", _
+                (gotBad = 0), "update=" & SelfTest_RectStr( rcU ) )
+
+            ' A row scrolled below the viewport. This list is long enough that its last row
+            ' cannot be on screen; assert that premise rather than assuming it.
+            dim as integer lastRow = PsListTree_GetCount( hInv ) - 1
+            PsListTree_SetPaintCallback( hInv, @SelfTest_RowCapturePaint )
+            dim as boolean bLastOnScreen = SelfTest_GrabRow( hInv, lastRow )
+            if bLastOnScreen then
+                SelfTest_Check( "InvalidateRow: the off-screen probe needs a row off screen", _
+                    false, "row " & str(lastRow) & " is visible; the demo list got shorter" )
+            else
+                ValidateRect( hSurf, NULL )
+                PsListTree_InvalidateRow( hInv, lastRow )
+                dim as long gotOff = GetUpdateRect( hSurf, @rcU, FALSE )
+                SelfTest_Check( "InvalidateRow ignores a row scrolled out of view", _
+                    (gotOff = 0), "update=" & SelfTest_RectStr( rcU ) )
+            end if
+
+            ' A row hidden inside a collapsed parent -- not the same case as scrolled away,
+            ' and it takes the other exit: the two binary searches cross because no visible
+            ' slot falls between the bounds.
+            dim as integer rAlpha = SelfTest_HeaderByText( hInv, "Group Alpha" )
+            if rAlpha < 0 then
+                SelfTest_Check( "InvalidateRow: 'Group Alpha' not found for the collapse probe", _
+                    false, "header missing" )
+            else
+                PsListTree_CollapseRow( hInv, rAlpha )
+                ValidateRect( hSurf, NULL )
+                PsListTree_InvalidateRow( hInv, rAlpha + 1 )        ' first child, now hidden
+                dim as long gotHidden = GetUpdateRect( hSurf, @rcU, FALSE )
+
+                ' And the header itself, which is still visible, still repaints -- otherwise
+                ' this test would pass for a version that simply did nothing at all.
+                ValidateRect( hSurf, NULL )
+                PsListTree_InvalidateRow( hInv, rAlpha )
+                dim as RECT rcHdr
+                dim as long gotHeader = GetUpdateRect( hSurf, @rcHdr, FALSE )
+
+                PsListTree_ExpandRow( hInv, rAlpha )
+
+                SelfTest_Check( "InvalidateRow ignores a row hidden by a collapsed parent", _
+                    (gotHidden = 0), "update=" & SelfTest_RectStr( rcU ) )
+                SelfTest_Check( "InvalidateRow still repaints the collapsed parent itself", _
+                    (gotHeader <> 0), "update=" & SelfTest_RectStr( rcHdr ) )
+            end if
+
+            PsListTree_SetPaintCallback( hInv, @PsListTree_PaintCallback )
+            ValidateRect( hSurf, NULL )
+        end if
+    end scope
+
     print "=== self-test complete: " & str(gFailCount) & " failure(s) ==="
 end sub
 

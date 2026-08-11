@@ -866,6 +866,35 @@ declare sub      PsListTree_EndUpdate( byval hListControl as HWND )
 declare sub      PsListTree_Refresh( byval hListControl as HWND )
 
 ' ----------------------------------------------------------------------------------------
+' Repaint SOME rows without rebuilding anything.
+'
+' Refresh is the right call after a change to the MODEL's shape -- rows added or removed,
+' a node collapsed, the sort order changed. It rebuilds the visible map (O(rowCount)),
+' re-derives the scroll position, syncs the scrollbar and repaints WITH a background erase.
+' None of that is needed when only what a row SAYS has changed, and on a list that is
+' updated continuously -- a price grid, a progress table, a log tail -- doing it per update
+' is the difference between a control that idles and one that does not.
+'
+' These take MODEL rows, like every other row-indexed call here, and are a NO-OP -- silently,
+' by design -- for a row that is invalid, hidden inside a collapsed parent, or scrolled out
+' of view. "Repaint this row" has nothing to do when the row is not on screen, and a caller
+' walking a list of changed ids should not have to test each one first.
+'
+' WHAT THEY DO NOT SAVE, because the name invites the wrong assumption: the surface's
+' WM_PAINT redraws EVERY row currently on screen regardless of the update rect. It has to --
+' PsBufferPaint buffers the whole client and blits the whole client, so a paint that skipped
+' rows outside the update region would blit an unpainted band over them. The saving is the
+' rebuild, the scroll re-derivation, the scrollbar sync and the erase; not the row loop,
+' which is bounded by the window height rather than by the model.
+'
+' InvalidateRows takes its two bounds in either order and coalesces them into ONE update
+' rect. A range whose ends are far apart therefore repaints the rows between them as well,
+' which is deliberate: one region and one WM_PAINT beats a scattered region and several.
+' ----------------------------------------------------------------------------------------
+declare sub      PsListTree_InvalidateRow( byval hListControl as HWND, byval row as integer )
+declare sub      PsListTree_InvalidateRows( byval hListControl as HWND, byval firstRow as integer, byval lastRow as integer )
+
+' ----------------------------------------------------------------------------------------
 ' Counts.  GetCount = every row in the model. GetVisibleCount = rows currently on show
 ' (headers + items of expanded groups). They differ whenever anything is collapsed.
 ' ----------------------------------------------------------------------------------------
