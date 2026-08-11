@@ -1861,6 +1861,203 @@ sub frmMain_RunSelfTest()
         end if
     end scope
 
+    ' ---- InvalidateRow / InvalidateRows -------------------------------------------------
+    ' The claim is about the UPDATE REGION, so that is what is read: GetUpdateRect after the
+    ' call, against the row rects captured from the REAL paint path. Nothing here re-derives
+    ' a row's position from RowHeight -- that would assert the arithmetic against itself.
+    '
+    ' ValidateRect before each probe because the self-test never pumps messages, so every
+    ' invalidate in this function accumulates into one region until something clears it.
+    scope
+        dim as HWND hInv  = HWND_FRMEXPLORER
+        dim as HWND hSurf = GetDlgItem( hInv, IDC_FRMMAIN_LISTBOX )
+        if (hInv <> 0) andalso (hSurf <> 0) then
+
+            PsListTree_SetPaintCallback( hInv, @SelfTest_RowCapturePaint )
+
+            dim as boolean bGot1 = SelfTest_GrabRow( hInv, 1 )
+            dim as RECT rcRow1 = gSelfTestRowRc
+            dim as boolean bGot3 = SelfTest_GrabRow( hInv, 3 )
+            dim as RECT rcRow3 = gSelfTestRowRc
+
+            dim as RECT rcU
+
+            if (bGot1 = false) orelse (bGot3 = false) then
+                SelfTest_Check( "InvalidateRow: could not capture the probe rows", false, _
+                    "row1=" & str(bGot1) & " row3=" & str(bGot3) )
+            else
+                ' One row: exactly that row's band, full client width.
+                ValidateRect( hSurf, NULL )
+                PsListTree_InvalidateRow( hInv, 1 )
+                dim as long gotOne = GetUpdateRect( hSurf, @rcU, FALSE )
+                SelfTest_Check( "InvalidateRow marks EXACTLY that row's band", _
+                    (gotOne <> 0) andalso (rcU.top = rcRow1.top) andalso (rcU.bottom = rcRow1.bottom) _
+                    andalso (rcU.left = rcRow1.left) andalso (rcU.right = rcRow1.right), _
+                    "update=" & SelfTest_RectStr( rcU ) & " row=" & SelfTest_RectStr( rcRow1 ) )
+
+                ' A span: from the first row's top to the last row's bottom, one region.
+                ValidateRect( hSurf, NULL )
+                PsListTree_InvalidateRows( hInv, 1, 3 )
+                dim as long gotSpan = GetUpdateRect( hSurf, @rcU, FALSE )
+                SelfTest_Check( "InvalidateRows spans first.top to last.bottom", _
+                    (gotSpan <> 0) andalso (rcU.top = rcRow1.top) andalso (rcU.bottom = rcRow3.bottom), _
+                    "update=" & SelfTest_RectStr( rcU ) & " expected top=" & str(rcRow1.top) & _
+                    " bottom=" & str(rcRow3.bottom) )
+
+                ' Bounds in either order. A caller diffing two ids has no reason to know
+                ' which is the lower model row.
+                ValidateRect( hSurf, NULL )
+                PsListTree_InvalidateRows( hInv, 3, 1 )
+                dim as RECT rcRev
+                dim as long gotRev = GetUpdateRect( hSurf, @rcRev, FALSE )
+                SelfTest_Check( "InvalidateRows accepts its bounds reversed", _
+                    (gotRev <> 0) andalso (rcRev.top = rcU.top) andalso (rcRev.bottom = rcU.bottom), _
+                    "reversed=" & SelfTest_RectStr( rcRev ) & " forward=" & SelfTest_RectStr( rcU ) )
+            end if
+
+            ' Invalid indices are a silent no-op, not a fault and not a whole-client repaint.
+            ' The whole-client case is the one that matters: it would look CORRECT on screen
+            ' and quietly undo the entire point of the call.
+            ValidateRect( hSurf, NULL )
+            PsListTree_InvalidateRow( hInv, -5 )
+            PsListTree_InvalidateRow( hInv, PsListTree_GetCount( hInv ) + 500 )
+            ' Into a variable FIRST. Inlined into the SelfTest_Check argument list the detail
+            ' string printed a stale rect on a passing run -- FreeBASIC does not promise the
+            ' argument evaluation order, so RectStr ran before GetUpdateRect cleared it.
+            dim as long gotBad = GetUpdateRect( hSurf, @rcU, FALSE )
+            SelfTest_Check( "InvalidateRow ignores an out-of-range row", _
+                (gotBad = 0), "update=" & SelfTest_RectStr( rcU ) )
+
+            ' A row scrolled below the viewport. This list is long enough that its last row
+            ' cannot be on screen; assert that premise rather than assuming it.
+            dim as integer lastRow = PsListTree_GetCount( hInv ) - 1
+            PsListTree_SetPaintCallback( hInv, @SelfTest_RowCapturePaint )
+            dim as boolean bLastOnScreen = SelfTest_GrabRow( hInv, lastRow )
+            if bLastOnScreen then
+                SelfTest_Check( "InvalidateRow: the off-screen probe needs a row off screen", _
+                    false, "row " & str(lastRow) & " is visible; the demo list got shorter" )
+            else
+                ValidateRect( hSurf, NULL )
+                PsListTree_InvalidateRow( hInv, lastRow )
+                dim as long gotOff = GetUpdateRect( hSurf, @rcU, FALSE )
+                SelfTest_Check( "InvalidateRow ignores a row scrolled out of view", _
+                    (gotOff = 0), "update=" & SelfTest_RectStr( rcU ) )
+            end if
+
+            ' A row hidden inside a collapsed parent -- not the same case as scrolled away,
+            ' and it takes the other exit: the two binary searches cross because no visible
+            ' slot falls between the bounds.
+            dim as integer rAlpha = SelfTest_HeaderByText( hInv, "Group Alpha" )
+            if rAlpha < 0 then
+                SelfTest_Check( "InvalidateRow: 'Group Alpha' not found for the collapse probe", _
+                    false, "header missing" )
+            else
+                PsListTree_CollapseRow( hInv, rAlpha )
+                ValidateRect( hSurf, NULL )
+                PsListTree_InvalidateRow( hInv, rAlpha + 1 )        ' first child, now hidden
+                dim as long gotHidden = GetUpdateRect( hSurf, @rcU, FALSE )
+
+                ' And the header itself, which is still visible, still repaints -- otherwise
+                ' this test would pass for a version that simply did nothing at all.
+                ValidateRect( hSurf, NULL )
+                PsListTree_InvalidateRow( hInv, rAlpha )
+                dim as RECT rcHdr
+                dim as long gotHeader = GetUpdateRect( hSurf, @rcHdr, FALSE )
+
+                PsListTree_ExpandRow( hInv, rAlpha )
+
+                SelfTest_Check( "InvalidateRow ignores a row hidden by a collapsed parent", _
+                    (gotHidden = 0), "update=" & SelfTest_RectStr( rcU ) )
+                SelfTest_Check( "InvalidateRow still repaints the collapsed parent itself", _
+                    (gotHeader <> 0), "update=" & SelfTest_RectStr( rcHdr ) )
+            end if
+
+            ' ---- the batch, and what EndUpdate decides to pay for ----------------------
+            ' The point of the invalidate API: a setter that changes only what a row SAYS
+            ' must not rebuild the visible map. Cell text cannot move a row, hide one, or
+            ' change how many there are, so the map it would rebuild is the map it has.
+            '
+            ' All four probes read the update REGION, because "did it do less work" is not
+            ' otherwise observable from outside -- a full Refresh and a row invalidate both
+            ' end with the right pixels on screen, which is exactly why this went unnoticed.
+            scope
+                dim as boolean bR5 = SelfTest_GrabRow( hInv, 5 )
+                dim as RECT rcRow5 = gSelfTestRowRc
+                dim as boolean bR7 = SelfTest_GrabRow( hInv, 7 )
+                dim as RECT rcRow7 = gSelfTestRowRc
+                dim as RECT rcAll : GetClientRect( hSurf, @rcAll )
+                dim as DWSTRING sWas5 = PsListTree_GetText( hInv, 5 )
+                dim as DWSTRING sWas7 = PsListTree_GetText( hInv, 7 )
+
+                if (bR5 = false) orelse (bR7 = false) then
+                    SelfTest_Check( "batch: could not capture the probe rows", false, "rows 5/7 off screen" )
+                else
+                    ' Unbatched: one row changed, one row's worth of update region.
+                    ValidateRect( hSurf, NULL )
+                    PsListTree_SetCellText( hInv, 5, 0, "changed" )
+                    dim as RECT rcOne
+                    dim as long gotOne = GetUpdateRect( hSurf, @rcOne, FALSE )
+                    SelfTest_Check( "SetCellText outside a batch repaints ONLY that row", _
+                        (gotOne <> 0) andalso (rcOne.top = rcRow5.top) andalso (rcOne.bottom = rcRow5.bottom), _
+                        "update=" & SelfTest_RectStr( rcOne ) & " row=" & SelfTest_RectStr( rcRow5 ) )
+
+                    ' Batched: nothing until EndUpdate, then ONE region covering both rows.
+                    ValidateRect( hSurf, NULL )
+                    PsListTree_BeginUpdate( hInv )
+                    PsListTree_SetCellText( hInv, 7, 0, "changed too" )
+                    PsListTree_SetCellText( hInv, 5, 0, "changed again" )
+                    dim as RECT rcDuring
+                    dim as long gotDuring = GetUpdateRect( hSurf, @rcDuring, FALSE )
+                    PsListTree_EndUpdate( hInv )
+                    dim as RECT rcAfter
+                    dim as long gotAfter = GetUpdateRect( hSurf, @rcAfter, FALSE )
+
+                    SelfTest_Check( "a batch of cell writes repaints nothing until EndUpdate", _
+                        (gotDuring = 0), "update=" & SelfTest_RectStr( rcDuring ) )
+                    ' Written out of order on purpose: the span is the union, not the last one.
+                    SelfTest_Check( "EndUpdate after cell writes repaints the SPAN, not the client", _
+                        (gotAfter <> 0) andalso (rcAfter.top = rcRow5.top) andalso _
+                        (rcAfter.bottom = rcRow7.bottom) andalso (rcAfter.bottom < rcAll.bottom), _
+                        "update=" & SelfTest_RectStr( rcAfter ) & " span=" & str(rcRow5.top) & _
+                        ".." & str(rcRow7.bottom) & " client=" & SelfTest_RectStr( rcAll ) )
+
+                    ' A structural change anywhere in the batch outranks the row span: the
+                    ' span describes a model that no longer exists. Ordered structural-LAST,
+                    ' which is the case a naive "remember the first notification" would miss.
+                    ValidateRect( hSurf, NULL )
+                    PsListTree_BeginUpdate( hInv )
+                    PsListTree_SetCellText( hInv, 5, 0, "text" )
+                    PsListTree_DeleteString( hInv, PsListTree_GetCount( hInv ) - 1 )
+                    PsListTree_EndUpdate( hInv )
+                    dim as RECT rcMixed
+                    dim as long gotMixed = GetUpdateRect( hSurf, @rcMixed, FALSE )
+                    SelfTest_Check( "a structural change in the batch still forces a full refresh", _
+                        (gotMixed <> 0) andalso (rcMixed.bottom = rcAll.bottom) andalso _
+                        (rcMixed.top = rcAll.top), _
+                        "update=" & SelfTest_RectStr( rcMixed ) & " client=" & SelfTest_RectStr( rcAll ) )
+
+                    ' And the contract EndUpdate has always had: it refreshes. A host that
+                    ' mutates rows through a ROWINFO pointer and wraps Begin/End around it
+                    ' purely to force a repaint must keep getting one.
+                    ValidateRect( hSurf, NULL )
+                    PsListTree_BeginUpdate( hInv )
+                    PsListTree_EndUpdate( hInv )
+                    dim as RECT rcEmpty
+                    dim as long gotEmpty = GetUpdateRect( hSurf, @rcEmpty, FALSE )
+                    SelfTest_Check( "an EMPTY batch still refreshes, as it always did", _
+                        (gotEmpty <> 0) andalso (rcEmpty.bottom = rcAll.bottom), _
+                        "update=" & SelfTest_RectStr( rcEmpty ) )
+
+                    PsListTree_SetCellText( hInv, 5, 0, sWas5 )
+                    PsListTree_SetCellText( hInv, 7, 0, sWas7 )
+                end if
+            end scope
+
+            PsListTree_SetPaintCallback( hInv, @PsListTree_PaintCallback )
+            ValidateRect( hSurf, NULL )
+        end if
+    end scope
+
     print "=== self-test complete: " & str(gFailCount) & " failure(s) ==="
 end sub
 

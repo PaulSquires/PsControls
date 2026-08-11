@@ -248,6 +248,16 @@ type PSLISTTREE
     visibleMap(any) as integer
     visibleCount    as integer = 0
     updateDepth     as integer = 0        ' BeginUpdate/EndUpdate nesting (defers refresh)
+    ' --- What a deferred batch has accumulated, so EndUpdate can pay the right price.
+    '     batchKind: 0 = nothing notified, 1 = row contents only, 2 = the model's SHAPE.
+    '
+    '     0 AND 2 BOTH REFRESH, and 0 is not an oversight. EndUpdate has always ended in a
+    '     Refresh, so a host that mutates rows through a ROWINFO pointer and then wraps
+    '     BeginUpdate/EndUpdate around it purely to force a repaint still gets one. Only the
+    '     row-contents case is made cheaper; nothing that worked before stops working.
+    batchKind       as integer = 0
+    batchFirstRow   as integer = -1       ' the dirty model span, -1 = none
+    batchLastRow    as integer = -1
     RowHeight       as integer = 22
     idc_ListTree     as integer = 1000
     accumDelta      as integer = 0        ' mousewheel
@@ -422,6 +432,7 @@ type PSLISTTREE
     declare sub      BeginUpdate()
     declare sub      EndUpdate()
     declare sub      NotifyChange()
+    declare sub      NotifyRowChanged( byval modelRow as integer )
     declare sub      Refresh()
 end type
 
@@ -429,6 +440,9 @@ end type
 ' scrollbar's range/visibility to match the current model + scroll position.
 declare sub      PsListTree_SyncScrollBar( byval pList as PSLISTTREE ptr )
 declare sub      PsListTree_SyncViewFromModel( byval pList as PSLISTTREE ptr )
+' Same arrangement: the row-scoped repaint that NotifyRowChanged and EndUpdate need.
+' PsListTree_InvalidateRow(s) are thin public wrappers over this.
+declare sub      PsListTree_InvalidateRowSpan( byval pList as PSLISTTREE ptr, byval firstRow as integer, byval lastRow as integer )
 declare sub      PsListTree_CaptureTopRow( byval pList as PSLISTTREE ptr )
 declare function PsListTree_ItemsPerPage( byval pList as PSLISTTREE ptr ) as integer
 declare function PsListTree_PositionWindows( byval hwnd as HWND ) as LRESULT
@@ -772,16 +786,54 @@ end sub
 
 sub PSLISTTREE.EndUpdate()
     if this.updateDepth > 0 then this.updateDepth -= 1
-    if this.updateDepth = 0 then this.Refresh()
+    if this.updateDepth <> 0 then exit sub
+
+    ' A batch that only ever changed what rows SAY repaints those rows and nothing else.
+    ' Cell text cannot move a row, hide one, or change how many there are, so the visible
+    ' map it would have rebuilt is the map it already has.
+    if this.batchKind = 1 then
+        dim as integer f = this.batchFirstRow
+        dim as integer l = this.batchLastRow
+        this.batchKind = 0 : this.batchFirstRow = -1 : this.batchLastRow = -1
+        PsListTree_InvalidateRowSpan( @this, f, l )
+        exit sub
+    end if
+
+    this.batchKind = 0 : this.batchFirstRow = -1 : this.batchLastRow = -1
+    this.Refresh()
 end sub
 
-' Called by every model mutator. Coalesces into a single Refresh when a
-' BeginUpdate/EndUpdate batch is active.
+' Called by every mutator that changes the model's SHAPE -- rows added or removed, a node
+' collapsed, the order changed. Coalesces into a single Refresh inside a batch.
 sub PSLISTTREE.NotifyChange()
-    if this.updateDepth = 0 then this.Refresh()
+    if this.updateDepth > 0 then
+        this.batchKind = 2                ' structural wins over any row-only notifications
+        exit sub
+    end if
+    this.Refresh()
+end sub
+
+' Called by the mutators that change only what ONE row says. Outside a batch this repaints
+' just that row; inside one it widens the batch's dirty span, which EndUpdate flushes.
+'
+' A structural notification anywhere in the batch outranks this, because the span it left
+' behind describes a model that no longer exists.
+sub PSLISTTREE.NotifyRowChanged( byval modelRow as integer )
+    if this.updateDepth > 0 then
+        if this.batchKind < 2 then
+            this.batchKind = 1
+            if (this.batchFirstRow < 0) orelse (modelRow < this.batchFirstRow) then this.batchFirstRow = modelRow
+            if (this.batchLastRow  < 0) orelse (modelRow > this.batchLastRow)  then this.batchLastRow  = modelRow
+        end if
+        exit sub
+    end if
+    PsListTree_InvalidateRowSpan( @this, modelRow, modelRow )
 end sub
 
 sub PSLISTTREE.Refresh()
+    ' A full refresh subsumes any pending row-scoped work, including a batch a host chose to
+    ' Refresh out from under.
+    this.batchKind = 0 : this.batchFirstRow = -1 : this.batchLastRow = -1
     ' Capture the listbox's actual scroll position back into the model BEFORE the
     ' rebuild: the sync below pushes LB_SETCOUNT (which resets the Win32 listbox's
     ' top and caret), and the OLD visibleMap still matches the listbox contents at
@@ -864,6 +916,35 @@ declare sub      PsListTree_Clear( byval hListControl as HWND )
 declare sub      PsListTree_BeginUpdate( byval hListControl as HWND )
 declare sub      PsListTree_EndUpdate( byval hListControl as HWND )
 declare sub      PsListTree_Refresh( byval hListControl as HWND )
+
+' ----------------------------------------------------------------------------------------
+' Repaint SOME rows without rebuilding anything.
+'
+' Refresh is the right call after a change to the MODEL's shape -- rows added or removed,
+' a node collapsed, the sort order changed. It rebuilds the visible map (O(rowCount)),
+' re-derives the scroll position, syncs the scrollbar and repaints WITH a background erase.
+' None of that is needed when only what a row SAYS has changed, and on a list that is
+' updated continuously -- a price grid, a progress table, a log tail -- doing it per update
+' is the difference between a control that idles and one that does not.
+'
+' These take MODEL rows, like every other row-indexed call here, and are a NO-OP -- silently,
+' by design -- for a row that is invalid, hidden inside a collapsed parent, or scrolled out
+' of view. "Repaint this row" has nothing to do when the row is not on screen, and a caller
+' walking a list of changed ids should not have to test each one first.
+'
+' WHAT THEY DO NOT SAVE, because the name invites the wrong assumption: the surface's
+' WM_PAINT redraws EVERY row currently on screen regardless of the update rect. It has to --
+' PsBufferPaint buffers the whole client and blits the whole client, so a paint that skipped
+' rows outside the update region would blit an unpainted band over them. The saving is the
+' rebuild, the scroll re-derivation, the scrollbar sync and the erase; not the row loop,
+' which is bounded by the window height rather than by the model.
+'
+' InvalidateRows takes its two bounds in either order and coalesces them into ONE update
+' rect. A range whose ends are far apart therefore repaints the rows between them as well,
+' which is deliberate: one region and one WM_PAINT beats a scattered region and several.
+' ----------------------------------------------------------------------------------------
+declare sub      PsListTree_InvalidateRow( byval hListControl as HWND, byval row as integer )
+declare sub      PsListTree_InvalidateRows( byval hListControl as HWND, byval firstRow as integer, byval lastRow as integer )
 
 ' ----------------------------------------------------------------------------------------
 ' Counts.  GetCount = every row in the model. GetVisibleCount = rows currently on show

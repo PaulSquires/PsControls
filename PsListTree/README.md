@@ -728,16 +728,57 @@ the tables below.
 | `PsListTree_GetCount( h ) as integer` | Every row in the model. |
 | `PsListTree_GetVisibleCount( h ) as integer` | Rows currently on show — headers plus the items of expanded groups. |
 | `PsListTree_GetText( h, row ) as DWSTRING` | The row's text, which is also its column 0 cell. `""` for an invalid row. |
-| `PsListTree_SetText( h, row, Text ) as boolean` | Sets it. FALSE for an invalid row. **Does not repaint** — call `PsListTree_Refresh` if the list is on screen. |
+| `PsListTree_SetText( h, row, Text ) as boolean` | Sets it. FALSE for an invalid row. **Repaints just that row** — no map rebuild. Wrap a bulk loop in `BeginUpdate`/`EndUpdate` and the rows collapse to one span. |
 | `PsListTree_GetCellText( h, row, col ) as DWSTRING` | Column `col`'s text for that row. `col = 0` is the row's own text. A cell never set — and any `col` beyond what the row stores — reads `""`, as does a negative `col`. |
-| `PsListTree_SetCellText( h, row, col, Text ) as boolean` | Sets it, growing the row's sparse cell storage as needed. FALSE for an invalid row or a negative `col`. A `col` beyond the defined columns is legal storage: it simply paints once a matching column exists. **Does not repaint.** |
+| `PsListTree_SetCellText( h, row, col, Text ) as boolean` | Sets it, growing the row's sparse cell storage as needed. FALSE for an invalid row or a negative `col`. A `col` beyond the defined columns is legal storage: it simply paints once a matching column exists. **Repaints just that row**, as `SetText` does. |
 | `PsListTree_GetItemData( h, row ) as integer` | The row's user value. 0 for an invalid row. |
 | `PsListTree_SetItemData( h, row, itemData ) as boolean` | Sets it. FALSE for an invalid row. **Does not repaint.** |
 | `PsListTree_GetItemDataExtra( h, row ) as integer` | The row's second user value. |
 | `PsListTree_SetItemDataExtra( h, row, itemDataExtra ) as boolean` | Sets it. FALSE for an invalid row. **Does not repaint.** |
 | `PsListTree_BeginUpdate( h )` | Suspends the rebuild-and-repaint that every model mutator would otherwise do. Nests. |
-| `PsListTree_EndUpdate( h )` | Ends one nesting level; the outermost one refreshes once. |
+| `PsListTree_EndUpdate( h )` | Ends one nesting level. The outermost one repaints once — a **full refresh**, unless the batch changed nothing but row *contents*, in which case just those rows. |
 | `PsListTree_Refresh( h )` | Rebuilds the visible map, re-derives the scroll position and the scrollbar, and repaints with a background erase. |
+| `PsListTree_InvalidateRow( h, row )` | Marks just that row's band for repaint. **Silent no-op** for a row that is invalid, hidden inside a collapsed parent, or scrolled out of view. |
+| `PsListTree_InvalidateRows( h, first, last )` | The same over a model range, coalesced into **one** update rect. Bounds may be given in either order. |
+
+#### Refresh, or invalidate?
+
+`Refresh` is for a change to the model's **shape** — rows added or removed, a node collapsed,
+the order changed. It rebuilds the visible map (`O(rowCount)`), re-derives the scroll position,
+syncs the scrollbar and repaints **with** a background erase.
+
+None of that is needed when only what a row *says* has changed. On a list that updates
+continuously — a price grid, a progress table, a log tail — doing it per update is the
+difference between a control that idles and one that does not. Invalidate the affected rows
+instead, and note the erase is skipped too, so a row that repaints under the user's eyes does
+not flash.
+
+What it does **not** save, because the name invites the wrong assumption: the surface's
+`WM_PAINT` redraws every row currently on screen regardless of the update rect. It has to —
+the buffer covers the whole client and is blitted whole, so a paint that skipped rows outside
+the update region would blit an unpainted band over them. The saving is the rebuild, the
+scroll re-derivation, the scrollbar sync and the erase; not the row loop, which is bounded by
+the window height rather than by the model.
+
+A range whose ends are far apart repaints the rows between them as well. That is deliberate:
+one region and one `WM_PAINT` beats a scattered region and several.
+
+#### You may not need to call either
+
+`SetText` and `SetCellText` are already row-scoped: they repaint just the row they wrote,
+because cell text cannot move a row, hide one, or change how many there are. Inside a
+`BeginUpdate`/`EndUpdate` batch they widen a dirty span that `EndUpdate` flushes as one
+invalidate.
+
+A **structural** change anywhere in the batch — a row added or deleted, a node collapsed, a
+reorder — outranks that span and `EndUpdate` does the full refresh, because the span describes
+a model that no longer exists. So does a batch in which nothing notified at all, which keeps
+the old contract for a host that mutates rows through a `ROWINFO` pointer and wraps
+`BeginUpdate`/`EndUpdate` around it purely to force a repaint.
+
+The explicit calls are for the case the control cannot see: a row whose *painted* appearance
+depends on something outside its stored text — a colour driven by host state, a value the paint
+callback reads from your own model.
 
 ### Groups and trees
 
