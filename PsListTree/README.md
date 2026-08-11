@@ -740,6 +740,7 @@ the tables below.
 | `PsListTree_Refresh( h )` | Rebuilds the visible map, re-derives the scroll position and the scrollbar, and repaints with a background erase. |
 | `PsListTree_InvalidateRow( h, row )` | Marks just that row's band for repaint. **Silent no-op** for a row that is invalid, hidden inside a collapsed parent, or scrolled out of view. |
 | `PsListTree_InvalidateRows( h, first, last )` | The same over a model range, coalesced into **one** update rect. Bounds may be given in either order. |
+| `PsListTree_UpdateNow( h )` | Paints whatever is invalidated **now**, instead of waiting for the queue to go idle. Reaches the surface, which `UpdateWindow` on the control's own handle does not. No-op when nothing is pending. |
 
 #### Refresh, or invalidate?
 
