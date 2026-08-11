@@ -943,6 +943,18 @@ declare sub      PsListTree_Refresh( byval hListControl as HWND )
 ' rect. A range whose ends are far apart therefore repaints the rows between them as well,
 ' which is deliberate: one region and one WM_PAINT beats a scattered region and several.
 ' ----------------------------------------------------------------------------------------
+' Paint whatever is currently invalidated, NOW, instead of waiting for the message queue to
+' go idle. The other half of InvalidateRow, and the reason it exists: a host that invalidates
+' rows from a data feed wants to mark many rows as they arrive and flush ONCE when the batch
+' is done, rather than either flushing per row or leaving the repaint to whenever Windows
+' next has nothing better to do.
+'
+' Reaches the SURFACE, which is what an UpdateWindow on this control's handle does not: the
+' container paints nothing and the rows live on a child.
+'
+' Does nothing when there is nothing invalidated, so it is safe to call unconditionally at
+' the end of a drain.
+declare sub      PsListTree_UpdateNow( byval hListControl as HWND )
 declare sub      PsListTree_InvalidateRow( byval hListControl as HWND, byval row as integer )
 declare sub      PsListTree_InvalidateRows( byval hListControl as HWND, byval firstRow as integer, byval lastRow as integer )
 

@@ -1853,6 +1853,16 @@ sub PsListTree_InvalidateRow( byval hListControl as HWND, byval row as integer )
 end sub
 
 
+sub PsListTree_UpdateNow( byval hListControl as HWND )
+    dim as PSLISTTREE ptr pList = GetListTreePointer(hListControl)
+    if pList = 0 then exit sub
+    dim as HWND hSurf = GetDlgItem( pList->hWin, pList->idc_ListTree )
+    if hSurf = 0 then exit sub
+    ' UpdateWindow is already a no-op when the update region is empty.
+    UpdateWindow( hSurf )
+end sub
+
+
 
 ' ========================================================================================
 ' Position all child windows. Called manually and/or by WM_SIZE
