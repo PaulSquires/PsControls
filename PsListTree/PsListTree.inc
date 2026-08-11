@@ -630,7 +630,7 @@ function PsListTree_SetText( byval hListControl as HWND, byval row as integer, b
     if pList = null then return false
     if pList->IsValidRow(row) then
         pList->GetRow(row)->Text = Text
-        pList->NotifyChange()       ' see the note on SetCellText below
+        pList->NotifyRowChanged( row )   ' see the note on SetCellText below
         return true     ' success
     end if
     return false  ' invalid row
@@ -672,10 +672,15 @@ function PsListTree_SetCellText( byval hListControl as HWND, byval row as intege
     ' AfxRedrawWindow on the control handle does not help either, because the rows are painted
     ' by the surface CHILD.
     '
-    ' It costs a bulk loop nothing: NotifyChange is coalesced by updateDepth, so anything already
-    ' wrapped in BeginUpdate/EndUpdate -- which is what this control's own docs tell a caller to
-    ' do for bulk loads -- collapses to the single Refresh it always did.
-    pList->NotifyChange()
+    ' It costs a bulk loop nothing: the notification is coalesced by updateDepth, so anything
+    ' already wrapped in BeginUpdate/EndUpdate -- which is what this control's own docs tell a
+    ' caller to do for bulk loads -- collapses to one repaint.
+    '
+    ' ROW-SCOPED, not NotifyChange. Cell text cannot move a row, hide one, or change how many
+    ' there are, so rebuilding the visible map to show it is work with no possible effect. On a
+    ' list being updated continuously that rebuild is O(rowCount) per tick and it was the whole
+    ' cost; the repaint it exists to trigger is bounded by the window.
+    pList->NotifyRowChanged( row )
     return true
 end function
 
@@ -1800,7 +1805,13 @@ end function
 ' NOTE THE NEIGHBOUR: PsListTree_InvalidateRowsForColumns is a different, private thing --
 ' it re-measures rows after a column change. This one is the public per-row repaint.
 sub PsListTree_InvalidateRows( byval hListControl as HWND, byval firstRow as integer, byval lastRow as integer )
-    dim as PSLISTTREE ptr pList = GetListTreePointer(hListControl)
+    PsListTree_InvalidateRowSpan( GetListTreePointer(hListControl), firstRow, lastRow )
+end sub
+
+
+' The body both the public wrappers and the control's own NotifyRowChanged / EndUpdate use.
+' Takes the instance rather than the HWND because the internal callers already hold it.
+sub PsListTree_InvalidateRowSpan( byval pList as PSLISTTREE ptr, byval firstRow as integer, byval lastRow as integer )
     if pList = 0 then exit sub
     dim as HWND hSurf = GetDlgItem( pList->hWin, pList->idc_ListTree )
     if hSurf = 0 then exit sub

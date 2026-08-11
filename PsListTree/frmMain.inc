@@ -1972,6 +1972,87 @@ sub frmMain_RunSelfTest()
                     (gotHeader <> 0), "update=" & SelfTest_RectStr( rcHdr ) )
             end if
 
+            ' ---- the batch, and what EndUpdate decides to pay for ----------------------
+            ' The point of the invalidate API: a setter that changes only what a row SAYS
+            ' must not rebuild the visible map. Cell text cannot move a row, hide one, or
+            ' change how many there are, so the map it would rebuild is the map it has.
+            '
+            ' All four probes read the update REGION, because "did it do less work" is not
+            ' otherwise observable from outside -- a full Refresh and a row invalidate both
+            ' end with the right pixels on screen, which is exactly why this went unnoticed.
+            scope
+                dim as boolean bR5 = SelfTest_GrabRow( hInv, 5 )
+                dim as RECT rcRow5 = gSelfTestRowRc
+                dim as boolean bR7 = SelfTest_GrabRow( hInv, 7 )
+                dim as RECT rcRow7 = gSelfTestRowRc
+                dim as RECT rcAll : GetClientRect( hSurf, @rcAll )
+                dim as DWSTRING sWas5 = PsListTree_GetText( hInv, 5 )
+                dim as DWSTRING sWas7 = PsListTree_GetText( hInv, 7 )
+
+                if (bR5 = false) orelse (bR7 = false) then
+                    SelfTest_Check( "batch: could not capture the probe rows", false, "rows 5/7 off screen" )
+                else
+                    ' Unbatched: one row changed, one row's worth of update region.
+                    ValidateRect( hSurf, NULL )
+                    PsListTree_SetCellText( hInv, 5, 0, "changed" )
+                    dim as RECT rcOne
+                    dim as long gotOne = GetUpdateRect( hSurf, @rcOne, FALSE )
+                    SelfTest_Check( "SetCellText outside a batch repaints ONLY that row", _
+                        (gotOne <> 0) andalso (rcOne.top = rcRow5.top) andalso (rcOne.bottom = rcRow5.bottom), _
+                        "update=" & SelfTest_RectStr( rcOne ) & " row=" & SelfTest_RectStr( rcRow5 ) )
+
+                    ' Batched: nothing until EndUpdate, then ONE region covering both rows.
+                    ValidateRect( hSurf, NULL )
+                    PsListTree_BeginUpdate( hInv )
+                    PsListTree_SetCellText( hInv, 7, 0, "changed too" )
+                    PsListTree_SetCellText( hInv, 5, 0, "changed again" )
+                    dim as RECT rcDuring
+                    dim as long gotDuring = GetUpdateRect( hSurf, @rcDuring, FALSE )
+                    PsListTree_EndUpdate( hInv )
+                    dim as RECT rcAfter
+                    dim as long gotAfter = GetUpdateRect( hSurf, @rcAfter, FALSE )
+
+                    SelfTest_Check( "a batch of cell writes repaints nothing until EndUpdate", _
+                        (gotDuring = 0), "update=" & SelfTest_RectStr( rcDuring ) )
+                    ' Written out of order on purpose: the span is the union, not the last one.
+                    SelfTest_Check( "EndUpdate after cell writes repaints the SPAN, not the client", _
+                        (gotAfter <> 0) andalso (rcAfter.top = rcRow5.top) andalso _
+                        (rcAfter.bottom = rcRow7.bottom) andalso (rcAfter.bottom < rcAll.bottom), _
+                        "update=" & SelfTest_RectStr( rcAfter ) & " span=" & str(rcRow5.top) & _
+                        ".." & str(rcRow7.bottom) & " client=" & SelfTest_RectStr( rcAll ) )
+
+                    ' A structural change anywhere in the batch outranks the row span: the
+                    ' span describes a model that no longer exists. Ordered structural-LAST,
+                    ' which is the case a naive "remember the first notification" would miss.
+                    ValidateRect( hSurf, NULL )
+                    PsListTree_BeginUpdate( hInv )
+                    PsListTree_SetCellText( hInv, 5, 0, "text" )
+                    PsListTree_DeleteString( hInv, PsListTree_GetCount( hInv ) - 1 )
+                    PsListTree_EndUpdate( hInv )
+                    dim as RECT rcMixed
+                    dim as long gotMixed = GetUpdateRect( hSurf, @rcMixed, FALSE )
+                    SelfTest_Check( "a structural change in the batch still forces a full refresh", _
+                        (gotMixed <> 0) andalso (rcMixed.bottom = rcAll.bottom) andalso _
+                        (rcMixed.top = rcAll.top), _
+                        "update=" & SelfTest_RectStr( rcMixed ) & " client=" & SelfTest_RectStr( rcAll ) )
+
+                    ' And the contract EndUpdate has always had: it refreshes. A host that
+                    ' mutates rows through a ROWINFO pointer and wraps Begin/End around it
+                    ' purely to force a repaint must keep getting one.
+                    ValidateRect( hSurf, NULL )
+                    PsListTree_BeginUpdate( hInv )
+                    PsListTree_EndUpdate( hInv )
+                    dim as RECT rcEmpty
+                    dim as long gotEmpty = GetUpdateRect( hSurf, @rcEmpty, FALSE )
+                    SelfTest_Check( "an EMPTY batch still refreshes, as it always did", _
+                        (gotEmpty <> 0) andalso (rcEmpty.bottom = rcAll.bottom), _
+                        "update=" & SelfTest_RectStr( rcEmpty ) )
+
+                    PsListTree_SetCellText( hInv, 5, 0, sWas5 )
+                    PsListTree_SetCellText( hInv, 7, 0, sWas7 )
+                end if
+            end scope
+
             PsListTree_SetPaintCallback( hInv, @PsListTree_PaintCallback )
             ValidateRect( hSurf, NULL )
         end if
