@@ -216,6 +216,84 @@ type PsBufferPaint
                 byval nCount as long, _
                 byval nPenWidth as long = 0 _
                 ) as long
+    ' --- CHART PRIMITIVES ----------------------------------------------------------------
+    ' Added for PsChart. Purely additive -- no existing method was touched -- which is what
+    ' makes the vendored copies safe to re-sync mechanically (PaintPolygon's precedent).
+    '
+    ' Filled pie wedge inscribed in rc, optionally stroked. nPenWidth 0 = fill only.
+    ' Angles are GDI+ degrees: 0 is 3 o'clock and a POSITIVE sweep runs CLOCKWISE, which is
+    ' the opposite of the mathematical convention and the opposite of GDI's own Pie(). A pie
+    ' chart that starts at 12 o'clock therefore starts at -90, not +90.
+    ' rc takes the same -1 on both extents that PaintEllipse does, for the same measured
+    ' reason: the wedge must sit exactly inside the ellipse PaintEllipse would draw there.
+    ' Always antialiased -- a wedge is nothing but curves and diagonals.
+    declare function PaintPie( _
+                byval rc as RECT ptr, _
+                byval startAngle as single, _
+                byval sweepAngle as single, _
+                byval nPenWidth as long = 0 _
+                ) as long
+    ' The same wedge with a concentric hole -- one segment of a doughnut.
+    '
+    ' nInnerRatio is the hole's radius as a FRACTION of the outer radius, clamped to
+    ' 0.0..0.9. At 0.0 this is PaintPie by another route (and takes it, rather than degenerate
+    ' into a zero-radius inner arc).
+    '
+    ' Built as a CGpGraphicsPath -- outer arc forward, inner arc reversed, CloseFigure --
+    ' because FillPie has no way to express a hole. A full-circle sweep is a special case:
+    ' the two arcs would be joined by a seam line, so it becomes two separate ellipse figures
+    ' under FillModeAlternate instead.
+    declare function PaintPieRing( _
+                byval rc as RECT ptr, _
+                byval nInnerRatio as single, _
+                byval startAngle as single, _
+                byval sweepAngle as single, _
+                byval nPenWidth as long = 0 _
+                ) as long
+    ' Open polyline through nCount vertices, stroked in the PEN colour.
+    '
+    ' STROKE ONLY. It never closes the figure and never fills -- that is the whole difference
+    ' from PaintPolygon, which does both. A data series is not a shape.
+    '
+    ' Round joins and round caps, so a series that reverses direction sharply has no mitre
+    ' spike shooting off the vertex (the default MiterJoin produces one at any angle under
+    ' ~30 degrees, and chart data supplies those constantly).
+    '
+    ' THE VERTICES ARE USED EXACTLY AS GIVEN, as PaintPolygon's are: no -1, no rect, no GDI
+    ' original to match. The +0.5 half-pixel offset IS applied, so a 1px series lands on the
+    ' same pixel rows a 1px PaintLine gridline would.
+    declare function PaintPolyline( _
+                byval pts as POINT ptr, _
+                byval nCount as long, _
+                byval nPenWidth as long = 1 _
+                ) as long
+    ' PaintPolyline through a cardinal spline instead of straight segments.
+    '
+    ' nTension 0.5 is GDI+'s own default and the only value that reads as a smoothed chart;
+    ' 0.0 collapses back to straight lines and anything past ~1.0 loops past its own points.
+    ' Clamped to 0.0..1.0 -- a spline that overshoots the plot rect is a bug, not a style.
+    declare function PaintCurve( _
+                byval pts as POINT ptr, _
+                byval nCount as long, _
+                byval nPenWidth as long = 1, _
+                byval nTension as single = 0.5 _
+                ) as long
+    ' Clip everything drawn afterwards to rc, on BOTH surfaces.
+    '
+    ' This has to set the GDI+ clip AND the memDC's GDI clip region, because the two APIs
+    ' keep separate clips on the one HDC and neither constrains the other. PsProgressBar
+    ' documents that trap from the other side (its GDI clip region does not hold back GDI+
+    ' geometry, which is why its text pass has to run last). A chart needs it from both
+    ' directions at once: a line series must not spill over the axis labels, and neither must
+    ' a slice label.
+    '
+    ' The GDI+ batch is flushed on the way in and out, so geometry issued before the clip is
+    ' on the surface unclipped and geometry issued after it is not. ResetClip undoes both.
+    ' EndDoubleBuffer's RestoreDC would drop the GDI half anyway; do not rely on that.
+    declare function SetClipRect( byval rc as RECT ptr ) as long
+    declare function ResetClip() as long
+    ' --- end chart primitives -------------------------------------------------------------
+
     ' Draw a GDI+ image (a CGpImage/CGpBitmap ptr, e.g. from PsImage.Image()) into rc.
     '
     ' This is where a control shows a real .ico/.png/.bmp instead of a Segoe Fluent Icons

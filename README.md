@@ -69,6 +69,12 @@ runnable demo.
 | [PsTooltip](PsTooltip/README.md) | A `WS_POPUP` tip that appears near the cursor after a dwell, optionally wrapped under a bold title and icon glyph, and fades in and out. |
 | [PsProgressBar](PsProgressBar/README.md) | A rounded track with a fill that grows along it — flat or gradient, continuous or blocked, independently. Switches to indeterminate when there is nothing to measure. |
 
+### Data display
+
+| Control | What it is |
+|---|---|
+| [PsChart](PsChart/README.md) | One control that draws four charts — line, grouped column, HLOC and pie — from series you hand it. Automatic gridlines and axis ticks, an optional legend and title, and a hover tooltip naming the point under the cursor. The chart type is fixed when you create it. |
+
 ## Support classes
 
 Not controls. These are types the controls are built from, useful in your own painting code too.

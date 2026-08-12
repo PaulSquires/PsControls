@@ -781,6 +781,285 @@ function PsBufferPaint.PaintPolygon( _
 end function
 
 ' ========================================================================================
+' CHART PRIMITIVES -- PaintPie, PaintPieRing, PaintPolyline, PaintCurve, SetClipRect,
+' ResetClip. Added for PsChart. Purely additive; see the .bi for the per-method contract.
+'
+' All four drawing methods scale their pen the way PaintPolygon and PaintLine do rather than
+' the way PaintEllipse does (which does not scale at all, and is the odd one out by its own
+' comment). A chart draws a series line, a wedge rim and a gridline side by side, and three
+' edges of the same nominal thickness must stay the same thickness at 175%.
+' ========================================================================================
+
+' Shared by the pen-stroking methods below: DPI-scale a nominal width, floor at 1, and
+' return 0 when there is no CWindow on the hwnd -- the same silent bail PaintLine takes.
+private function CBufScalePen( byval hwnd as HWND, byval nWidth as long ) as long
+    dim pWindow as CWindow ptr = AfxCWindowPtr( hwnd )
+    if pWindow = 0 then return 0
+    dim as long penWidth = pWindow->ScaleY( nWidth )
+    if penWidth < 1 then penWidth = 1
+    return penWidth
+end function
+
+function PsBufferPaint.PaintPie( _
+            byval rc as RECT ptr, _
+            byval startAngle as single, _
+            byval sweepAngle as single, _
+            byval nPenWidth as long = 0 _
+            ) as long
+    if rc = 0 then return 0
+
+    ' The -1 on both extents is PaintEllipse's, and is here for a reason beyond consistency:
+    ' a pie chart draws its wedges into the same box a PaintEllipse rim would occupy, and a
+    ' one-pixel disagreement puts the rim off the wedges it is meant to trace.
+    dim as single w = csng( rc->right - rc->left - 1 )
+    dim as single h = csng( rc->bottom - rc->top - 1 )
+    if (w <= 0.0) orelse (h <= 0.0) then return 0
+
+    ' A zero sweep is a legal data point (a series value of 0) and must draw NOTHING rather
+    ' than the degenerate radius line GDI+ would otherwise leave behind.
+    if abs( sweepAngle ) < 0.0001 then return 0
+
+    dim as CGpGraphics ptr g = this.EnsureGraphics()
+    if g = 0 then return 0
+
+    dim as long oldSmooth = g->GetSmoothingMode()
+    g->SetSmoothingMode( SmoothingModeAntiAlias )
+
+    g->FillPie( this.BrushFor( CBufToARGB( _backcolor, _backalpha ) ), _
+                csng(rc->left), csng(rc->top), w, h, startAngle, sweepAngle )
+
+    if nPenWidth > 0 then
+        dim as long penWidth = CBufScalePen( _hwnd, nPenWidth )
+        if penWidth > 0 then
+            ' CENTRED ON THE FILL'S OWN RIM -- deliberately NOT inset the way PaintEllipse's
+            ' and PaintRoundOutline's strokes are.
+            '
+            ' MEASURED: an inset stroke leaves the fill's outermost antialiased row exposed
+            ' OUTSIDE it, and on a pie chart -- where this pen is the slice separator, drawn
+            ' in the background colour -- that row survives as a faint one-pixel arc of the
+            ' slice's colour floating a few pixels beyond the wedge. A centred pen covers it.
+            g->DrawPie( this.PenFor( CBufToARGB( _pencolor, _penalpha ), csng(penWidth) ), _
+                        csng(rc->left) + 0.5, csng(rc->top) + 0.5, _
+                        w, h, startAngle, sweepAngle )
+        end if
+    end if
+
+    g->SetSmoothingMode( oldSmooth )
+    _gpDirty = true
+    function = 0
+end function
+
+function PsBufferPaint.PaintPieRing( _
+            byval rc as RECT ptr, _
+            byval nInnerRatio as single, _
+            byval startAngle as single, _
+            byval sweepAngle as single, _
+            byval nPenWidth as long = 0 _
+            ) as long
+    if rc = 0 then return 0
+
+    dim as single ratio = nInnerRatio
+    if ratio < 0.0 then ratio = 0.0
+    if ratio > 0.9 then ratio = 0.9
+    ' Below about a pixel of hole there is nothing to see and the reversed inner arc becomes
+    ' numerically unstable, so take the solid wedge instead of drawing a degenerate ring.
+    if ratio <= 0.001 then return this.PaintPie( rc, startAngle, sweepAngle, nPenWidth )
+
+    dim as single w = csng( rc->right - rc->left - 1 )
+    dim as single h = csng( rc->bottom - rc->top - 1 )
+    if (w <= 0.0) orelse (h <= 0.0) then return 0
+    if abs( sweepAngle ) < 0.0001 then return 0
+
+    dim as CGpGraphics ptr g = this.EnsureGraphics()
+    if g = 0 then return 0
+
+    dim as single x  = csng( rc->left )
+    dim as single y  = csng( rc->top )
+    dim as single iw = w * ratio
+    dim as single ih = h * ratio
+    dim as single ix = x + (w - iw) / 2.0
+    dim as single iy = y + (h - ih) / 2.0
+
+    dim as long oldSmooth = g->GetSmoothingMode()
+    g->SetSmoothingMode( SmoothingModeAntiAlias )
+
+    scope
+        ' FillModeAlternate matters only for the full-circle branch, where the hole is a
+        ' second figure rather than a reversed arc -- but it is the path's default and
+        ' setting it explicitly makes the two branches read as one shape.
+        dim as CGpGraphicsPath ringPath = CGpGraphicsPath( FillModeAlternate )
+
+        if abs( sweepAngle ) >= 359.99 then
+            ' A whole-circle "wedge" -- one data point holding 100%. Built as two concentric
+            ' ellipses, because joining a 360-degree outer arc to a reversed 360-degree inner
+            ' one leaves a visible seam line where the two figures meet.
+            ringPath.AddEllipse( x, y, w, h )
+            ringPath.StartFigure()
+            ringPath.AddEllipse( ix, iy, iw, ih )
+        else
+            ' Outer arc forward, inner arc reversed. AddArc joins to the current point with a
+            ' straight line of its own, which is exactly the radial edge a wedge wants, so
+            ' the two arcs plus CloseFigure produce the whole segment.
+            ringPath.AddArc( x, y, w, h, startAngle, sweepAngle )
+            ringPath.AddArc( ix, iy, iw, ih, startAngle + sweepAngle, -sweepAngle )
+            ringPath.CloseFigure()
+        end if
+
+        g->FillPath( this.BrushFor( CBufToARGB( _backcolor, _backalpha ) ), @ringPath )
+
+        if nPenWidth > 0 then
+            dim as long penWidth = CBufScalePen( _hwnd, nPenWidth )
+            if penWidth > 0 then
+                g->DrawPath( this.PenFor( CBufToARGB( _pencolor, _penalpha ), csng(penWidth) ), _
+                             @ringPath )
+            end if
+        end if
+    end scope
+
+    g->SetSmoothingMode( oldSmooth )
+    _gpDirty = true
+    function = 0
+end function
+
+' Shared by PaintPolyline and PaintCurve: both stroke an open run of vertices with the same
+' pen settings, and differ only in which Graphics call consumes the points.
+private sub CBufApplySeriesPen( byval pPen as CGpPen ptr )
+    if pPen = 0 then exit sub
+    ' Round joins and caps. The default MiterJoin spikes at any sharp reversal, and chart
+    ' data supplies those constantly -- a series that drops from its maximum to its minimum
+    ' between two adjacent categories is an ordinary chart, not an edge case.
+    pPen->SetLineJoin( LineJoinRound )
+    pPen->SetStartCap( LineCapRound )
+    pPen->SetEndCap( LineCapRound )
+end sub
+
+' The pen cache is shared with every other method on this buffer, so the join/cap settings
+' above have to be put back or the next PaintRoundOutline gets round corners it did not ask
+' for. Restores GDI+'s own defaults, which is what a freshly built CGpPen carries.
+private sub CBufResetSeriesPen( byval pPen as CGpPen ptr )
+    if pPen = 0 then exit sub
+    pPen->SetLineJoin( LineJoinMiter )
+    pPen->SetStartCap( LineCapFlat )
+    pPen->SetEndCap( LineCapFlat )
+end sub
+
+function PsBufferPaint.PaintPolyline( _
+            byval pts as POINT ptr, _
+            byval nCount as long, _
+            byval nPenWidth as long = 1 _
+            ) as long
+    if pts = 0 then return 0
+    ' Two points is the shortest thing that is still a line. One point is a legal series --
+    ' a chart with a single category -- and draws nothing here; the symbol pass shows it.
+    if nCount < 2 then return 0
+
+    dim as long penWidth = CBufScalePen( _hwnd, nPenWidth )
+    if penWidth = 0 then return 0
+
+    dim as CGpGraphics ptr g = this.EnsureGraphics()
+    if g = 0 then return 0
+
+    dim as long oldSmooth = g->GetSmoothingMode()
+    g->SetSmoothingMode( SmoothingModeAntiAlias )
+
+    redim as GpPointF ptsF( 0 to nCount - 1 )
+    for i as long = 0 to nCount - 1
+        ptsF(i).x = csng( pts[i].x ) + 0.5
+        ptsF(i).y = csng( pts[i].y ) + 0.5
+    next
+
+    dim as CGpPen ptr pPen = this.PenFor( CBufToARGB( _pencolor, _penalpha ), csng(penWidth) )
+    CBufApplySeriesPen( pPen )
+    g->DrawLines( pPen, @ptsF(0), nCount )
+    CBufResetSeriesPen( pPen )
+
+    g->SetSmoothingMode( oldSmooth )
+    _gpDirty = true
+    function = 0
+end function
+
+function PsBufferPaint.PaintCurve( _
+            byval pts as POINT ptr, _
+            byval nCount as long, _
+            byval nPenWidth as long = 1, _
+            byval nTension as single = 0.5 _
+            ) as long
+    if pts = 0 then return 0
+    ' DrawCurve needs three points to have anything to interpolate between; with two it is a
+    ' straight line, so hand those to the primitive that draws one properly.
+    if nCount < 3 then return this.PaintPolyline( pts, nCount, nPenWidth )
+
+    dim as single tension = nTension
+    if tension < 0.0 then tension = 0.0
+    if tension > 1.0 then tension = 1.0
+
+    dim as long penWidth = CBufScalePen( _hwnd, nPenWidth )
+    if penWidth = 0 then return 0
+
+    dim as CGpGraphics ptr g = this.EnsureGraphics()
+    if g = 0 then return 0
+
+    dim as long oldSmooth = g->GetSmoothingMode()
+    g->SetSmoothingMode( SmoothingModeAntiAlias )
+
+    redim as GpPointF ptsF( 0 to nCount - 1 )
+    for i as long = 0 to nCount - 1
+        ptsF(i).x = csng( pts[i].x ) + 0.5
+        ptsF(i).y = csng( pts[i].y ) + 0.5
+    next
+
+    dim as CGpPen ptr pPen = this.PenFor( CBufToARGB( _pencolor, _penalpha ), csng(penWidth) )
+    CBufApplySeriesPen( pPen )
+    g->DrawCurve( pPen, @ptsF(0), nCount, tension )
+    CBufResetSeriesPen( pPen )
+
+    g->SetSmoothingMode( oldSmooth )
+    _gpDirty = true
+    function = 0
+end function
+
+function PsBufferPaint.SetClipRect( byval rc as RECT ptr ) as long
+    if rc = 0 then return 0
+    if (rc->right <= rc->left) orelse (rc->bottom <= rc->top) then return 0
+
+    ' Commit whatever GDI+ has batched BEFORE the clip goes on. GDI+ applies the clip when
+    ' the batch is played back, not when the call was recorded, so geometry issued before
+    ' this line would otherwise be clipped by a region it predates.
+    this.EnsureGdiReady()
+
+    dim as CGpGraphics ptr g = this.EnsureGraphics()
+    if g <> 0 then
+        dim as GpRectF rcf
+        rcf.x = csng( rc->left )
+        rcf.y = csng( rc->top )
+        rcf.Width  = csng( rc->right  - rc->left )
+        rcf.Height = csng( rc->bottom - rc->top )
+        g->SetClip( @rcf, CombineModeReplace )
+    end if
+
+    ' The GDI half. Not redundant: GDI+ reads the HDC's clip when the Graphics is built and
+    ' not again, so this one holds back PaintText and nothing else -- which is precisely the
+    ' half the GDI+ clip above cannot reach.
+    if _memDC then
+        dim as HRGN hrgn = CreateRectRgn( rc->left, rc->top, rc->right, rc->bottom )
+        if hrgn then
+            SelectClipRgn( _memDC, hrgn )
+            DeleteObject( hrgn )      ' SelectClipRgn copies the region; this one is spent
+        end if
+    end if
+
+    function = 0
+end function
+
+function PsBufferPaint.ResetClip() as long
+    this.EnsureGdiReady()
+    if _pGraphics then _pGraphics->ResetClip()
+    if _memDC then SelectClipRgn( _memDC, null )
+    function = 0
+end function
+
+
+' ========================================================================================
 ' Draw a GDI+ image into rc, fitting it per nFit. See the .bi header for why the draw lives
 ' here rather than in the control that owns the image.
 '
