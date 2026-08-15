@@ -437,6 +437,89 @@ private sub CHT_RenderSymbol( byval b as PsBufferPaint ptr, byval nSymbol as lon
     end select
 end sub
 
+' ----------------------------------------------------------------------------------------
+' AREA FILLS. Every one of these paints UNDER every polyline, which is why it is a pass of
+' its own rather than something CHT_RenderLine does per series on its way past: a fill drawn
+' inline would cover the series drawn before it. Symbols stay on top for the same reason --
+' they are drawn by CHT_RenderLine, which runs after this.
+'
+' Alpha is the whole point. An opaque fill under a two-series chart hides one of them; the
+' host is expected to pass something translucent, and the demo does.
+' ----------------------------------------------------------------------------------------
+' Bands go down FIRST, under the per-series area fills as well as under every polyline. A band
+' is the broad backdrop the fills and lines are read against, so a fill drawn over it still
+' shows the band's tint through its own alpha; the other order would hide the fill entirely
+' wherever the two overlap.
+private sub CHT_RenderBands( byval pChart as PSCHART ptr, byval b as PsBufferPaint ptr )
+    for k as long = 0 to pChart->bandCount - 1
+        dim as PSCHART_SERIES ptr sLo = pChart->GetSeries( pChart->bands(k).iLo )
+        dim as PSCHART_SERIES ptr sHi = pChart->GetSeries( pChart->bands(k).iHi )
+        ' A band whose series was hidden or emptied is CARRIED but not drawn, rather than
+        ' deleted: unhiding the series must bring the band back, or a legend click would
+        ' silently destroy the host's setup.
+        if (sLo = 0) orelse (sHi = 0) then continue for
+        if (sLo->bVisible = false) orelse (sHi->bVisible = false) then continue for
+        dim as long nHi = sHi->pointCount
+        dim as long nLo = sLo->pointCount
+        if (nHi < 2) orelse (nLo < 2) then continue for
+
+        ' Forward along the high edge, back along the low one -- the ribbon between two runs.
+        ' The two series are walked over their OWN point counts, not a shared minimum: a
+        ' forecast that runs two months past its companion should still be enclosed, and
+        ' closing the polygon early would leave the tail outside the band it belongs to.
+        redim as POINT pts( 0 to nHi + nLo - 1 )
+        for j as long = 0 to nHi - 1
+            pts(j) = sHi->points(j).ptPlot
+        next
+        for j as long = 0 to nLo - 1
+            pts(nHi + j) = sLo->points(nLo - 1 - j).ptPlot
+        next
+
+        b->SetBackColorA( pChart->bands(k).clr, cubyte( pChart->bands(k).nAlpha ) )
+        b->PaintPolygon( @pts(0), nHi + nLo, 0 )
+    next
+end sub
+
+private sub CHT_RenderAreaFills( byval pChart as PSCHART ptr, byval b as PsBufferPaint ptr )
+    for i as long = 0 to pChart->seriesCount - 1
+        if pChart->series(i).bVisible = false then continue for
+        if pChart->series(i).bHasFill = false then continue for
+        dim as long n = pChart->series(i).pointCount
+        ' One point has no area. Two is the shortest run that encloses one.
+        if n < 2 then continue for
+
+        ' The polyline forward, then down to the baseline and back along it. The baseline is
+        ' nOriginY -- the SAME number the column renderer stands its bars on, resolved once by
+        ' LayoutChart and clamped into the plot. A second baseline computed here would drift
+        ' from that one the moment the value range stopped straddling zero.
+        dim as long nBase = pChart->nOriginY
+        redim as POINT pts( 0 to n + 1 )
+        for j as long = 0 to n - 1
+            pts(j) = pChart->series(i).points(j).ptPlot
+        next
+        pts(n).x     = pChart->series(i).points(n - 1).ptPlot.x
+        pts(n).y     = nBase
+        pts(n + 1).x = pChart->series(i).points(0).ptPlot.x
+        pts(n + 1).y = nBase
+
+        b->SetBackColorA( pChart->series(i).FillColor, _
+                          cubyte( pChart->series(i).nFillAlpha ) )
+        b->PaintPolygon( @pts(0), n + 2, 0 )
+    next
+end sub
+
+' CHT_LINE_* is the chart's vocabulary and PS_PENDASH_* is the buffer's. They are deliberately
+' two enums rather than one shared constant: PsBufferPaint is vendored into every control in
+' the family and must not grow a dependency on a chart's idea of what a line style is.
+private function CHT_DashForLineStyle( byval nStyle as long ) as long
+    select case nStyle
+    case CHT_LINE_DASH    : return PS_PENDASH_DASH
+    case CHT_LINE_DOT     : return PS_PENDASH_DOT
+    case CHT_LINE_DASHDOT : return PS_PENDASH_DASHDOT
+    case else             : return PS_PENDASH_SOLID
+    end select
+end function
+
 private sub CHT_RenderLine( byval pChart as PSCHART ptr, byval b as PsBufferPaint ptr )
     for i as long = 0 to pChart->seriesCount - 1
         if pChart->series(i).bVisible = false then continue for
@@ -451,11 +534,16 @@ private sub CHT_RenderLine( byval pChart as PSCHART ptr, byval b as PsBufferPain
         next
 
         b->SetPenColor( clrSer )
+        ' Set per series and put back to solid immediately after, rather than once around the
+        ' whole loop: the buffer's pen state outlives this function, and a chart whose LAST
+        ' series happened to be dashed would otherwise hand a dashed pen to whatever drew next.
+        b->SetPenDashStyle( CHT_DashForLineStyle( pChart->series(i).nLineStyle ) )
         if pChart->series(i).bSmooth then
             b->PaintCurve( @pts(0), n, pChart->series(i).nLineWidth )
         else
             b->PaintPolyline( @pts(0), n, pChart->series(i).nLineWidth )
         end if
+        b->SetPenDashStyle( PS_PENDASH_SOLID )
 
         if pChart->series(i).nSymbol <> CHT_SYM_NONE then
             for j as long = 0 to n - 1
@@ -802,7 +890,13 @@ private sub CHT_Render( byval pChart as PSCHART ptr, byval b as PsBufferPaint pt
         select case pChart->nChartType
         case PSCHART_TYPE_COLUMN : CHT_RenderColumn( pChart, b )
         case PSCHART_TYPE_HLOC   : CHT_RenderHloc( pChart, b )
-        case else                : CHT_RenderLine( pChart, b )
+        case else
+            ' STRICT Z-ORDER, and it is the whole reason these are separate passes rather than
+            ' one loop: bands, then fills, then every polyline over both, then the markers on
+            ' top. A band that covered the two lines it brackets would be worse than no band.
+            CHT_RenderBands( pChart, b )
+            CHT_RenderAreaFills( pChart, b )
+            CHT_RenderLine( pChart, b )
         end select
         b->ResetClip()
 
@@ -1161,6 +1255,121 @@ function PsChart_SetSeriesLineWidth( byval hChart as HWND, byval iSeries as long
     s->nLineWidth = nWidth
     pChart->Refresh()
     return true
+end function
+
+function PsChart_SetSeriesFill( byval hChart as HWND, byval series as integer, byval clrFill as COLORREF, byval nAlpha as long ) as boolean
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return false
+    dim as PSCHART_SERIES ptr s = pChart->GetSeries( clng(series) )
+    if s = 0 then return false
+    if nAlpha < 0 then nAlpha = 0
+    if nAlpha > 255 then nAlpha = 255
+    s->bHasFill   = true
+    s->FillColor  = clrFill
+    s->nFillAlpha = nAlpha
+    pChart->Refresh()
+    return true
+end function
+
+' An alpha of 0 is a LEGAL fill that happens to be invisible, not a way to turn the fill off.
+' This is the way off, exactly as ClearSeriesColor is for a colour override.
+function PsChart_ClearSeriesFill( byval hChart as HWND, byval series as integer ) as boolean
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return false
+    dim as PSCHART_SERIES ptr s = pChart->GetSeries( clng(series) )
+    if s = 0 then return false
+    s->bHasFill = false
+    pChart->Refresh()
+    return true
+end function
+
+function PsChart_SetColumnMode( byval hChart as HWND, byval nMode as long ) as boolean
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return false
+    ' Unrecognised falls back to GROUPED rather than being rejected: that is the mode every
+    ' column chart already draws, so a bad value costs a caller nothing it had.
+    pChart->nColumnMode = iif( nMode = CHT_COL_STACKED, CHT_COL_STACKED, CHT_COL_GROUPED )
+    pChart->Refresh()
+    return true
+end function
+
+function PsChart_GetColumnMode( byval hChart as HWND ) as long
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return CHT_COL_GROUPED
+    return pChart->nColumnMode
+end function
+
+function PsChart_SetSeriesBand( byval hChart as HWND, byval seriesLo as integer, byval seriesHi as integer, byval clrFill as COLORREF, byval nAlpha as long ) as boolean
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return false
+    dim as long iLo = clng(seriesLo)
+    dim as long iHi = clng(seriesHi)
+    if pChart->IsValidSeries( iLo ) = false then return false
+    if pChart->IsValidSeries( iHi ) = false then return false
+    ' A series banded against itself is a zero-area ribbon. Rejected rather than carried,
+    ' because it can only be a caller's slip and carrying it makes the slip invisible.
+    if iLo = iHi then return false
+    if nAlpha < 0 then nAlpha = 0
+    if nAlpha > 255 then nAlpha = 255
+
+    dim as long k = pChart->FindBand( iLo, iHi )
+    if k < 0 then
+        dim as long cap = ubound(pChart->bands) + 1
+        if pChart->bandCount >= cap then
+            redim preserve pChart->bands( 0 to iif( cap = 0, 8, cap * 2 ) - 1 )
+        end if
+        k = pChart->bandCount
+        pChart->bandCount += 1
+    end if
+    pChart->bands(k).iLo    = iLo
+    pChart->bands(k).iHi    = iHi
+    pChart->bands(k).clr    = clrFill
+    pChart->bands(k).nAlpha = nAlpha
+    pChart->Refresh()
+    return true
+end function
+
+' Removed by SWAPPING THE LAST ONE DOWN rather than shuffling the tail: bands have no
+' meaningful order -- they are all painted before every line -- so nothing can observe it.
+' Returns false when there was no band for that pair, which is how a host can tell a removal
+' from a no-op.
+function PsChart_ClearSeriesBand( byval hChart as HWND, byval seriesLo as integer, byval seriesHi as integer ) as boolean
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return false
+    dim as long k = pChart->FindBand( clng(seriesLo), clng(seriesHi) )
+    if k < 0 then return false
+    if k <> pChart->bandCount - 1 then
+        pChart->bands(k) = pChart->bands( pChart->bandCount - 1 )
+    end if
+    pChart->bandCount -= 1
+    pChart->Refresh()
+    return true
+end function
+
+' An unrecognised style is STORED AS SOLID rather than rejected, so Get always answers with
+' something the renderer can actually draw and a host cannot read back a value that would
+' paint nothing.
+function PsChart_SetSeriesLineStyle( byval hChart as HWND, byval series as integer, byval nStyle as long ) as boolean
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return false
+    dim as PSCHART_SERIES ptr s = pChart->GetSeries( clng(series) )
+    if s = 0 then return false
+    select case nStyle
+    case CHT_LINE_DASH, CHT_LINE_DOT, CHT_LINE_DASHDOT
+        s->nLineStyle = nStyle
+    case else
+        s->nLineStyle = CHT_LINE_SOLID
+    end select
+    pChart->Refresh()
+    return true
+end function
+
+function PsChart_GetSeriesLineStyle( byval hChart as HWND, byval series as integer ) as long
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return CHT_LINE_SOLID
+    dim as PSCHART_SERIES ptr s = pChart->GetSeries( clng(series) )
+    if s = 0 then return CHT_LINE_SOLID
+    return s->nLineStyle
 end function
 
 function PsChart_SetSeriesSymbol( byval hChart as HWND, byval iSeries as long, byval nSymbol as long, byval nSize as long = PSCHART_DEFAULT_SYMBOLSIZE ) as boolean
@@ -1835,6 +2044,45 @@ function PsChart_CountRenderedTones( byval hChart as HWND ) as long
         next
     next
     return nSeen
+end function
+
+function PsChart_GetRenderedPixel( byval hChart as HWND, byval x as long, byval y as long ) as COLORREF
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return CLR_INVALID
+
+    dim as PsBufferPaint b
+    dim as RECT rc
+    if CHT_RenderOffscreen( pChart, @b, rc ) = false then return CLR_INVALID
+    dim as HDC hdc = b.getMemDC()
+    if hdc = 0 then return CLR_INVALID
+
+    dim as POINT pt
+    pt.x = x : pt.y = y
+    if PtInRect( @rc, pt ) = 0 then return CLR_INVALID
+    return GetPixel( hdc, x, y )
+end function
+
+function PsChart_CountPlotInkPixels( byval hChart as HWND, byval clrBack as COLORREF ) as long
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return 0
+
+    dim as PsBufferPaint b
+    dim as RECT rc
+    if CHT_RenderOffscreen( pChart, @b, rc ) = false then return 0
+    dim as HDC hdc = b.getMemDC()
+    if hdc = 0 then return 0
+
+    ' rcPlot is only trustworthy after the render above ran the layout.
+    dim as RECT rcp = pChart->rcPlot
+    if IntersectRect( @rcp, @rcp, @rc ) = 0 then return 0
+
+    dim as long n = 0
+    for y as long = rcp.top to rcp.bottom - 1
+        for x as long = rcp.left to rcp.right - 1
+            if GetPixel( hdc, x, y ) <> clrBack then n += 1
+        next
+    next
+    return n
 end function
 
 function PsChart_HashRenderedPart( byval hChart as HWND ) as ulong

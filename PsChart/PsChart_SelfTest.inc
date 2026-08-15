@@ -455,6 +455,403 @@ function PsChart_RunSelfTest( byval hWndParent as HWND ) as long
         end if
     end scope
 
+    ' --- per-series line style -------------------------------------------------------------------------------
+    ' The whole claim being tested is "a dashed series is distinguishable from a solid one at
+    ' the width a chart actually uses", and the only honest measurement of that is the ink:
+    ' identical geometry, fewer set pixels. A hash comparison would only prove the picture
+    ' changed, which a colour change would prove equally well.
+    scope
+        dim as HWND h = CHTTest_MakeChart( hWndParent, PSCHART_TYPE_LINE, 700, 400 )
+        if h <> 0 then
+            dim as PSCHART_COLORS clrs
+            PsChart_GetColors( h, @clrs )
+
+            dim as long s = PsChart_AddSeries( h, "s" )
+            ' A zig-zag rather than a ramp: a dash pattern that only ever met one slope would
+            ' not exercise the join, and the joins are where a dashed polyline goes wrong.
+            for j as long = 0 to 11
+                PsChart_AddPoint( h, s, str(j), iif( (j mod 2) = 0, 10.0, 40.0 ) )
+            next
+            PsChart_SetSeriesLineWidth( h, s, 2 )
+
+            dim as boolean bDefSolid = (PsChart_GetSeriesLineStyle( h, s ) = CHT_LINE_SOLID)
+
+            ' Geometry must not move. Captured before the style changes and compared after,
+            ' because "fewer pixels" only means "dashed" if the line is in the same place.
+            dim as RECT rcBefore
+            PsChart_GetPointRect( h, s, 5, rcBefore )
+
+            dim as long inkSolid = PsChart_CountPlotInkPixels( h, clrs.PlotBackColor )
+
+            PsChart_SetSeriesLineStyle( h, s, CHT_LINE_DASH )
+            dim as long inkDash = PsChart_CountPlotInkPixels( h, clrs.PlotBackColor )
+
+            PsChart_SetSeriesLineStyle( h, s, CHT_LINE_DOT )
+            dim as long inkDot = PsChart_CountPlotInkPixels( h, clrs.PlotBackColor )
+
+            PsChart_SetSeriesLineStyle( h, s, CHT_LINE_DASHDOT )
+            dim as long inkDashDot = PsChart_CountPlotInkPixels( h, clrs.PlotBackColor )
+
+            dim as RECT rcAfter
+            PsChart_GetPointRect( h, s, 5, rcAfter )
+
+            CHTTest_Check( "LineStyle: a new series defaults to solid", bDefSolid, _
+                           "default=" & str(CHT_LINE_SOLID) )
+            CHTTest_Check( "LineStyle: a dashed series draws less ink than the solid one", _
+                           (inkDash < inkSolid) andalso (inkDash > 0), _
+                           "solid=" & str(inkSolid) & " dash=" & str(inkDash) )
+            CHTTest_Check( "LineStyle: a dotted series draws less ink again", _
+                           (inkDot < inkDash) andalso (inkDot > 0), _
+                           "dash=" & str(inkDash) & " dot=" & str(inkDot) )
+            CHTTest_Check( "LineStyle: dash-dot lands between dot and dash", _
+                           (inkDashDot > inkDot) andalso (inkDashDot < inkSolid), _
+                           "dot=" & str(inkDot) & " dashdot=" & str(inkDashDot) & " solid=" & str(inkSolid) )
+            CHTTest_Check( "LineStyle: the style does not move the geometry", _
+                           EqualRect( @rcBefore, @rcAfter ) <> 0, _
+                           CHTTest_RectStr(rcBefore) & " vs " & CHTTest_RectStr(rcAfter) )
+
+            PsChart_SetSeriesLineStyle( h, s, 999 )
+            CHTTest_Check( "LineStyle: an unrecognised style is stored as solid", _
+                           (PsChart_GetSeriesLineStyle( h, s ) = CHT_LINE_SOLID), _
+                           "style=" & str(PsChart_GetSeriesLineStyle( h, s )) )
+            CHTTest_Check( "LineStyle: an out-of-range series answers solid and does not fault", _
+                           (PsChart_SetSeriesLineStyle( h, 99, CHT_LINE_DASH ) = false) andalso _
+                           (PsChart_GetSeriesLineStyle( h, 99 ) = CHT_LINE_SOLID), _
+                           "rejected" )
+
+            DestroyWindow( h )
+        end if
+    end scope
+
+    ' --- area fill under a series ----------------------------------------------------------------------------
+    ' Asserted by SAMPLING NAMED PIXELS, not by eye. A flat series at a known value has a known
+    ' baseline and a known top edge, so "inside the fill" and "above the fill" are arithmetic.
+    scope
+        dim as HWND h = CHTTest_MakeChart( hWndParent, PSCHART_TYPE_LINE, 700, 400 )
+        if h <> 0 then
+            dim as PSCHART_COLORS clrs
+            PsChart_GetColors( h, @clrs )
+
+            ' A FLAT series, on purpose: every x has the same y, so one sample stands for the
+            ' whole run and no assertion below depends on where along it we looked.
+            dim as long s = PsChart_AddSeries( h, "s" )
+            for j as long = 0 to 9
+                PsChart_AddPoint( h, s, str(j), 50.0 )
+            next
+            ' Fixed range, so the baseline is the plot bottom and the line is exactly halfway
+            ' up it -- autoscaling a flat series would pick a range this test cannot predict.
+            PsChart_SetValueRange( h, 0.0, 100.0 )
+
+            dim as RECT rcPlot
+            PsChart_GetPlotRect( h, rcPlot )
+            dim as long yLine = PsChart_ValueToY( h, 50.0 )
+            dim as long xMid  = (rcPlot.left + rcPlot.right) \ 2
+            ' Well clear of the line's own 2px stroke in both directions.
+            dim as long yIn   = (yLine + rcPlot.bottom) \ 2      ' under the line, in the fill
+            dim as long yOut  = (rcPlot.top + yLine) \ 2         ' above the line, outside it
+
+            dim as long tonesBefore = PsChart_CountRenderedTones( h )
+            dim as COLORREF cInBefore = PsChart_GetRenderedPixel( h, xMid, yIn )
+
+            PsChart_SetSeriesFill( h, s, BGR(0,160,255), 128 )
+
+            dim as long tonesAfter = PsChart_CountRenderedTones( h )
+            dim as COLORREF cIn  = PsChart_GetRenderedPixel( h, xMid, yIn )
+            dim as COLORREF cOut = PsChart_GetRenderedPixel( h, xMid, yOut )
+
+            CHTTest_Check( "Fill: a fill adds tones to the surface", (tonesAfter > tonesBefore), _
+                           "before=" & str(tonesBefore) & " after=" & str(tonesAfter) )
+            CHTTest_Check( "Fill: a pixel between the line and the baseline changed colour", _
+                           (cIn <> cInBefore), "was=" & hex(cInBefore) & " now=" & hex(cIn) )
+            CHTTest_Check( "Fill: a pixel ABOVE the line did not -- the fill stops at the line", _
+                           (cOut = clrs.PlotBackColor), _
+                           "y=" & str(yOut) & " got=" & hex(cOut) & " want=" & hex(clrs.PlotBackColor) )
+            ' 128 alpha over the dark default background must land BETWEEN the two, which is
+            ' what proves the alpha was honoured rather than the colour painted flat.
+            CHTTest_Check( "Fill: the fill is translucent, not the flat colour asked for", _
+                           (cIn <> BGR(0,160,255)) andalso (cIn <> clrs.PlotBackColor), _
+                           "got=" & hex(cIn) & " opaque would be " & hex(BGR(0,160,255)) )
+
+            PsChart_ClearSeriesFill( h, s )
+            dim as COLORREF cCleared = PsChart_GetRenderedPixel( h, xMid, yIn )
+            CHTTest_Check( "Fill: ClearSeriesFill puts the background back", _
+                           (cCleared = cInBefore), _
+                           "was=" & hex(cInBefore) & " now=" & hex(cCleared) )
+
+            CHTTest_Check( "Fill: an out-of-range series is rejected and does not fault", _
+                           (PsChart_SetSeriesFill( h, 99, BGR(255,0,0), 128 ) = false) andalso _
+                           (PsChart_ClearSeriesFill( h, 99 ) = false), "rejected" )
+
+            DestroyWindow( h )
+        end if
+    end scope
+
+    ' --- a filled band between two series --------------------------------------------------------------------
+    ' Two FLAT series at known values over a fixed range, so "between them" and "outside them"
+    ' are pixel rows this test computes rather than recognises. That is the whole assertion: a
+    ' band that leaked past its own edges, or one that covered the lines it brackets, would
+    ' pass any check that only asked whether the picture changed.
+    scope
+        dim as HWND h = CHTTest_MakeChart( hWndParent, PSCHART_TYPE_LINE, 700, 400 )
+        if h <> 0 then
+            dim as PSCHART_COLORS clrs
+            PsChart_GetColors( h, @clrs )
+
+            dim as long sLo = PsChart_AddSeries( h, "lo" )
+            dim as long sHi = PsChart_AddSeries( h, "hi" )
+            for j as long = 0 to 9
+                PsChart_AddPoint( h, sLo, str(j), 30.0 )
+                PsChart_AddPoint( h, sHi, str(j), 70.0 )
+            next
+            PsChart_SetValueRange( h, 0.0, 100.0 )
+
+            dim as RECT rcPlot
+            PsChart_GetPlotRect( h, rcPlot )
+            dim as long yLo = PsChart_ValueToY( h, 30.0 )       ' lower on screen = larger y
+            dim as long yHi = PsChart_ValueToY( h, 70.0 )
+            dim as long xMid = (rcPlot.left + rcPlot.right) \ 2
+            dim as long yMid = (yHi + yLo) \ 2                   ' squarely between the two
+            dim as long yAbove = (rcPlot.top + yHi) \ 2          ' above the high series
+            dim as long yBelow = (yLo + rcPlot.bottom) \ 2       ' below the low series
+
+            dim as COLORREF cMidBefore   = PsChart_GetRenderedPixel( h, xMid, yMid )
+            dim as long     inkBefore    = PsChart_CountPlotInkPixels( h, clrs.PlotBackColor )
+
+            dim as boolean bSet = PsChart_SetSeriesBand( h, sLo, sHi, BGR(255,170,0), 110 )
+
+            dim as COLORREF cMid   = PsChart_GetRenderedPixel( h, xMid, yMid )
+            dim as COLORREF cAbove = PsChart_GetRenderedPixel( h, xMid, yAbove )
+            dim as COLORREF cBelow = PsChart_GetRenderedPixel( h, xMid, yBelow )
+            dim as long     inkAfter = PsChart_CountPlotInkPixels( h, clrs.PlotBackColor )
+
+            CHTTest_Check( "Band: setting one over two valid series succeeds", bSet, "set=" & str(bSet) )
+            CHTTest_Check( "Band: a pixel BETWEEN the two series is filled", _
+                           (cMid <> cMidBefore) andalso (cMid <> clrs.PlotBackColor), _
+                           "y=" & str(yMid) & " was=" & hex(cMidBefore) & " now=" & hex(cMid) )
+            CHTTest_Check( "Band: a pixel ABOVE the high series is untouched", _
+                           (cAbove = clrs.PlotBackColor), _
+                           "y=" & str(yAbove) & " got=" & hex(cAbove) )
+            CHTTest_Check( "Band: a pixel BELOW the low series is untouched", _
+                           (cBelow = clrs.PlotBackColor), _
+                           "y=" & str(yBelow) & " got=" & hex(cBelow) )
+            CHTTest_Check( "Band: the fill is translucent, not the flat colour asked for", _
+                           (cMid <> BGR(255,170,0)), _
+                           "got=" & hex(cMid) & " opaque would be " & hex(BGR(255,170,0)) )
+            ' HOW FAR ALONG X the ribbon runs. A polyline starts at the first category's slot
+            ' CENTRE and ends at the last one's, not at the plot's edges, so the band's extent
+            ' is derived from the vertices rather than from rcPlot.
+            dim as RECT rcP0, rcP9
+            PsChart_GetPointRect( h, sHi, 0, rcP0 )
+            PsChart_GetPointRect( h, sHi, 9, rcP9 )
+            dim as long xFirst = (rcP0.left + rcP0.right) \ 2
+            dim as long xLast  = (rcP9.left + rcP9.right) \ 2
+
+            CHTTest_Check( "Band: it reaches the first vertex", _
+                           (PsChart_GetRenderedPixel( h, xFirst + 3, yMid ) = cMid), _
+                           "x=" & str(xFirst + 3) )
+            CHTTest_Check( "Band: it reaches the last vertex", _
+                           (PsChart_GetRenderedPixel( h, xLast - 3, yMid ) = cMid), _
+                           "x=" & str(xLast - 3) )
+            CHTTest_Check( "Band: it stops there -- the plot left of the first vertex is clear", _
+                           (PsChart_GetRenderedPixel( h, xFirst - 8, yMid ) = clrs.PlotBackColor), _
+                           "x=" & str(xFirst - 8) & " got=" & hex(PsChart_GetRenderedPixel( h, xFirst - 8, yMid )) )
+
+            ' And it is a solid ribbon, not an outline or a sliver. The bound is 80% of the
+            ' rectangle the band must contain, deliberately loose in ONE direction only:
+            ' gridlines and the two series had already inked part of that area before the band
+            ' arrived, so those pixels cannot be "gained" twice, and the edges antialias.
+            dim as long areaMin = clng( (xLast - xFirst) * (yLo - yHi) * 0.8 )
+            CHTTest_Check( "Band: it fills the whole ribbon, not a sliver of it", _
+                           (inkAfter - inkBefore) >= areaMin, _
+                           "gained=" & str(inkAfter - inkBefore) & " need>=" & str(areaMin) )
+
+            ' THE Z-ORDER CLAIM. The two lines must still be on top of the band they bracket.
+            ' Sampled ON the high series' own row, which must be neither the band's tint nor
+            ' the background -- it must be the series' pen.
+            dim as COLORREF cOnLine = PsChart_GetRenderedPixel( h, xMid, yHi )
+            CHTTest_Check( "Band: the bracketed lines are drawn OVER the band, not under it", _
+                           (cOnLine <> cMid) andalso (cOnLine <> clrs.PlotBackColor), _
+                           "online=" & hex(cOnLine) & " band=" & hex(cMid) )
+
+            ' Identity is the PAIR, in either order.
+            PsChart_SetSeriesBand( h, sLo, sHi, BGR(0,255,0), 110 )
+            CHTTest_Check( "Band: re-setting the same pair replaces it rather than stacking", _
+                           (PsChart_GetRenderedPixel( h, xMid, yMid ) <> cMid), "replaced" )
+            CHTTest_Check( "Band: clearing takes the pair in the opposite order", _
+                           PsChart_ClearSeriesBand( h, sHi, sLo ), "cleared" )
+            CHTTest_Check( "Band: clearing puts the background back exactly", _
+                           (PsChart_GetRenderedPixel( h, xMid, yMid ) = cMidBefore), _
+                           "now=" & hex(PsChart_GetRenderedPixel( h, xMid, yMid )) )
+            CHTTest_Check( "Band: clearing one that is not there reports false", _
+                           (PsChart_ClearSeriesBand( h, sHi, sLo ) = false), "no-op" )
+            CHTTest_Check( "Band: a series banded against itself is rejected", _
+                           (PsChart_SetSeriesBand( h, sLo, sLo, BGR(255,0,0), 128 ) = false), _
+                           "rejected" )
+            CHTTest_Check( "Band: an out-of-range series is rejected and does not fault", _
+                           (PsChart_SetSeriesBand( h, sLo, 99, BGR(255,0,0), 128 ) = false), _
+                           "rejected" )
+
+            ' A hidden edge suppresses the band but must not destroy it -- unhiding brings the
+            ' same picture back, or a legend click would silently eat the host's setup.
+            PsChart_SetSeriesBand( h, sLo, sHi, BGR(255,170,0), 110 )
+            PsChart_SetSeriesVisible( h, sHi, false )
+            dim as COLORREF cHidden = PsChart_GetRenderedPixel( h, xMid, yMid )
+            PsChart_SetSeriesVisible( h, sHi, true )
+            dim as COLORREF cRestored = PsChart_GetRenderedPixel( h, xMid, yMid )
+            CHTTest_Check( "Band: hiding an edge suppresses the band", _
+                           (cHidden <> cMid), "hidden=" & hex(cHidden) )
+            CHTTest_Check( "Band: unhiding it brings the same band back", _
+                           (cRestored = cMid), "restored=" & hex(cRestored) & " want=" & hex(cMid) )
+
+            DestroyWindow( h )
+        end if
+    end scope
+
+    ' --- stacked columns --------------------------------------------------------------------------------------
+    scope
+        dim as HWND h = CHTTest_MakeChart( hWndParent, PSCHART_TYPE_COLUMN, 700, 400 )
+        if h <> 0 then
+            ' Three series over four categories. The totals differ per category on purpose,
+            ' so a range taken from the tallest SINGLE value could not accidentally be right.
+            dim as double v(0 to 2, 0 to 3) = { _
+                    { 2, 5, 1, 3 }, _
+                    { 4, 2, 6, 1 }, _
+                    { 3, 1, 2, 8 } }
+            dim as double totals(0 to 3) = { 9, 8, 9, 12 }
+            for i as long = 0 to 2
+                dim as long s = PsChart_AddSeries( h, "s" & str(i) )
+                for j as long = 0 to 3
+                    PsChart_AddPoint( h, s, "c" & str(j), v(i, j) )
+                next
+            next
+
+            CHTTest_Check( "Stacked: a column chart defaults to grouped", _
+                           (PsChart_GetColumnMode( h ) = CHT_COL_GROUPED), _
+                           "mode=" & str(PsChart_GetColumnMode( h )) )
+
+            ' Grouped first, so the stacked numbers below are compared against a real before.
+            dim as RECT rcG0, rcG1
+            PsChart_GetPointRect( h, 0, 3, rcG0 )
+            PsChart_GetPointRect( h, 1, 3, rcG1 )
+            dim as boolean bSideBySide = (rcG0.right <= rcG1.left)
+
+            PsChart_SetColumnMode( h, CHT_COL_STACKED )
+            CHTTest_Check( "Stacked: the mode reads back", _
+                           (PsChart_GetColumnMode( h ) = CHT_COL_STACKED), "mode=stacked" )
+
+            dim as double fLo, fHi
+            PsChart_GetValueRange( h, fLo, fHi )
+            ' The tallest single value is 8 and the tallest STACK is 12. A range that stopped
+            ' short of 12 would draw a stack running off the top of its own plot.
+            CHTTest_Check( "Stacked: the axis scales to the stack total, not the tallest bar", _
+                           (fHi >= 12.0), "max=" & str(fHi) & " tallest stack=12 tallest bar=8" )
+            CHTTest_Check( "Stacked: the axis still includes zero", (fLo <= 0.0), "min=" & str(fLo) )
+
+            ' Category 3: segments of 3, 1 and 8 piled up from the baseline.
+            dim as RECT rc0, rc1, rc2
+            PsChart_GetPointRect( h, 0, 3, rc0 )
+            PsChart_GetPointRect( h, 1, 3, rc1 )
+            PsChart_GetPointRect( h, 2, 3, rc2 )
+
+            CHTTest_Check( "Stacked: grouped really was side by side, so this is a change", _
+                           bSideBySide, "grouped " & CHTTest_RectStr(rcG0) & " " & CHTTest_RectStr(rcG1) )
+            CHTTest_Check( "Stacked: every segment of a category shares one bar's width", _
+                           (rc0.left = rc1.left) andalso (rc1.left = rc2.left) andalso _
+                           (rc0.right = rc1.right) andalso (rc1.right = rc2.right), _
+                           CHTTest_RectStr(rc0) & " " & CHTTest_RectStr(rc1) & " " & CHTTest_RectStr(rc2) )
+            CHTTest_Check( "Stacked: the first segment stands on the baseline", _
+                           (rc0.bottom = PsChart_ValueToY( h, 0.0 )), _
+                           "bottom=" & str(rc0.bottom) & " origin=" & str(PsChart_ValueToY( h, 0.0 )) )
+            ' CONTIGUOUS, to the pixel. A gap or an overlap here is the classic stacked-bar
+            ' defect and it is invisible at a glance.
+            CHTTest_Check( "Stacked: segment 2 starts exactly where segment 1 ended", _
+                           (rc1.bottom = rc0.top), _
+                           "s1.top=" & str(rc0.top) & " s2.bottom=" & str(rc1.bottom) )
+            CHTTest_Check( "Stacked: segment 3 starts exactly where segment 2 ended", _
+                           (rc2.bottom = rc1.top), _
+                           "s2.top=" & str(rc1.top) & " s3.bottom=" & str(rc2.bottom) )
+            CHTTest_Check( "Stacked: the top of the stack is the total's own pixel row", _
+                           (rc2.top = PsChart_ValueToY( h, totals(3) )), _
+                           "top=" & str(rc2.top) & " want=" & str(PsChart_ValueToY( h, totals(3) )) )
+
+            ' HIT TESTING NAMES THE SEGMENT, not the stack. Sampled at each segment's own
+            ' vertical middle, which is arithmetic on the rects above and not a guess.
+            dim as long xMid = (rc1.left + rc1.right) \ 2
+            dim as long iSer, iPt
+            dim as boolean bHit1 = PsChart_HitTest( h, xMid, (rc1.top + rc1.bottom) \ 2, iSer, iPt )
+            CHTTest_Check( "Stacked: a click in the middle segment names the middle series", _
+                           bHit1 andalso (iSer = 1) andalso (iPt = 3), _
+                           "series=" & str(iSer) & " point=" & str(iPt) )
+            dim as boolean bHit2 = PsChart_HitTest( h, xMid, (rc2.top + rc2.bottom) \ 2, iSer, iPt )
+            CHTTest_Check( "Stacked: a click in the top segment names the top series", _
+                           bHit2 andalso (iSer = 2) andalso (iPt = 3), _
+                           "series=" & str(iSer) & " point=" & str(iPt) )
+            dim as boolean bHit0 = PsChart_HitTest( h, xMid, rc0.bottom - 2, iSer, iPt )
+            CHTTest_Check( "Stacked: a click just above the baseline names the bottom series", _
+                           bHit0 andalso (iSer = 0) andalso (iPt = 3), _
+                           "series=" & str(iSer) & " point=" & str(iPt) )
+
+            ' A hidden series must leave the stack AND the range, not just stop drawing --
+            ' the same rule the grouped path already keeps.
+            PsChart_SetSeriesVisible( h, 2, false )
+            dim as double fLo2, fHi2
+            PsChart_GetValueRange( h, fLo2, fHi2 )
+            dim as RECT rcH1
+            PsChart_GetPointRect( h, 1, 3, rcH1 )
+            CHTTest_Check( "Stacked: hiding a series shrinks the axis to the new totals", _
+                           (fHi2 < fHi), "was=" & str(fHi) & " now=" & str(fHi2) )
+            CHTTest_Check( "Stacked: the survivors close up rather than leaving a hole", _
+                           (rcH1.bottom = PsChart_ValueToY( h, v(0, 3) )), _
+                           "bottom=" & str(rcH1.bottom) & " want=" & str(PsChart_ValueToY( h, v(0, 3) )) )
+            PsChart_SetSeriesVisible( h, 2, true )
+
+            CHTTest_Check( "Stacked: an unrecognised mode falls back to grouped", _
+                           PsChart_SetColumnMode( h, 77 ) andalso _
+                           (PsChart_GetColumnMode( h ) = CHT_COL_GROUPED), "grouped" )
+
+            DestroyWindow( h )
+        end if
+    end scope
+
+    ' Negatives stack DOWN from the baseline while positives stack up, so a category holding
+    ' both reads as two piles meeting at zero instead of one pile that cancels itself out.
+    scope
+        dim as HWND h = CHTTest_MakeChart( hWndParent, PSCHART_TYPE_COLUMN, 700, 400 )
+        if h <> 0 then
+            dim as long s0 = PsChart_AddSeries( h, "up" )
+            dim as long s1 = PsChart_AddSeries( h, "down" )
+            dim as long s2 = PsChart_AddSeries( h, "up2" )
+            PsChart_AddPoint( h, s0, "c0",  4.0 )
+            PsChart_AddPoint( h, s1, "c0", -6.0 )
+            PsChart_AddPoint( h, s2, "c0",  3.0 )
+            PsChart_SetColumnMode( h, CHT_COL_STACKED )
+
+            dim as long yZero = PsChart_ValueToY( h, 0.0 )
+            dim as RECT rcUp, rcDown, rcUp2
+            PsChart_GetPointRect( h, s0, 0, rcUp )
+            PsChart_GetPointRect( h, s1, 0, rcDown )
+            PsChart_GetPointRect( h, s2, 0, rcUp2 )
+
+            CHTTest_Check( "Stacked negatives: the positive segment sits above the baseline", _
+                           (rcUp.bottom = yZero) andalso (rcUp.top < yZero), _
+                           CHTTest_RectStr(rcUp) & " zero=" & str(yZero) )
+            CHTTest_Check( "Stacked negatives: the negative segment hangs below it", _
+                           (rcDown.top = yZero) andalso (rcDown.bottom > yZero), _
+                           CHTTest_RectStr(rcDown) & " zero=" & str(yZero) )
+            CHTTest_Check( "Stacked negatives: the second positive stacks on the first, not on zero", _
+                           (rcUp2.bottom = rcUp.top), _
+                           "up.top=" & str(rcUp.top) & " up2.bottom=" & str(rcUp2.bottom) )
+
+            dim as double fLo, fHi
+            PsChart_GetValueRange( h, fLo, fHi )
+            CHTTest_Check( "Stacked negatives: the range covers both piles, not their net", _
+                           (fHi >= 7.0) andalso (fLo <= -6.0), _
+                           "min=" & str(fLo) & " max=" & str(fHi) & " net would be -1" )
+
+            DestroyWindow( h )
+        end if
+    end scope
+
     dim as string sSum = "===== " & str(gCHT_TestCount) & " checks, " & str(gCHT_FailCount) & " failed ====="
     print sSum
     return gCHT_FailCount

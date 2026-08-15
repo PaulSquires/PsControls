@@ -66,6 +66,21 @@ enum PS_IMGFIT
     PS_IMGFIT_CENTER
 end enum
 
+' How PaintPolyline / PaintCurve break their stroke. SOLID (0) is the default and is what
+' every existing caller gets without saying anything.
+'
+' The patterns are stated EXPLICITLY below rather than handed to GDI+'s own DashStyle enum,
+' because GDI+'s DashStyleDash is 3-on-1-off in pen-width units -- at a 1px pen that is three
+' set pixels for every clear one and reads as a slightly ragged solid line. A dashed series
+' exists to be told apart from a solid one at a glance at 1-2px, which is the width a chart
+' series actually uses, so the on/off ratio has to favour the gap.
+enum PS_PENDASH
+    PS_PENDASH_SOLID = 0
+    PS_PENDASH_DASH
+    PS_PENDASH_DOT
+    PS_PENDASH_DASHDOT
+end enum
+
 type PsBufferPaint
     private:
         _hwnd            as HWND
@@ -81,6 +96,13 @@ type PsBufferPaint
         ' existing SetXxxColor call keeps working unchanged and simply means "opaque".
         ' Only the SetXxxColorA overloads ever set these to anything but 255.
         _penalpha        as ubyte = 255
+        ' The dash pattern PaintPolyline/PaintCurve stroke with. Carried alongside the pen
+        ' colour for the same reason the alphas are: every existing call keeps meaning
+        ' "solid" without having to say so, and only SetPenDashStyle ever changes it.
+        ' NOTHING ELSE READS IT -- a dashed gridline or a dashed border is not something this
+        ' family draws, and applying it to every stroking method would change existing
+        ' pictures the moment a caller set it for one series.
+        _pendash         as long = PS_PENDASH_SOLID
         _forealpha       as ubyte = 255
         _backalpha       as ubyte = 255
         _hFont           as HFONT         ' caller-supplied font; the control/host owns it
@@ -354,6 +376,10 @@ type PsBufferPaint
     declare function SetForeColorA( byval forecolor as COLORREF, byval nAlpha as ubyte ) as long
     declare function SetBackColorA( byval backcolor as COLORREF, byval nAlpha as ubyte ) as long
     declare function SetPenColorA( byval pencolor as COLORREF, byval nAlpha as ubyte ) as long
+    ' One of the PS_PENDASH_* constants. Affects PaintPolyline and PaintCurve ONLY, and stays
+    ' set until it is set back -- it is a pen state like the colour, not a per-call argument.
+    declare function SetPenDashStyle( byval nDash as long ) as long
+    declare function GetPenDashStyle() as long
     declare function rcClient() as RECT
     declare function rcClientWidth() as long
     declare function rcClientHeight() as long

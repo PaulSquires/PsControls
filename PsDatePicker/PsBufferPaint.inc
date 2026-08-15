@@ -318,6 +318,22 @@ function PsBufferPaint.SetPenColorA( byval pencolor as COLORREF, byval nAlpha as
     function = 0
 end function
 
+' An unrecognised value falls back to SOLID rather than being rejected. A host that passes
+' garbage gets a readable chart and not a series that silently stopped drawing.
+function PsBufferPaint.SetPenDashStyle( byval nDash as long ) as long
+    select case nDash
+    case PS_PENDASH_DASH, PS_PENDASH_DOT, PS_PENDASH_DASHDOT
+        _pendash = nDash
+    case else
+        _pendash = PS_PENDASH_SOLID
+    end select
+    function = 0
+end function
+
+function PsBufferPaint.GetPenDashStyle() as long
+    function = _pendash
+end function
+
 ' ========================================================================================
 ' The rounded/bordered rectangle workhorse.
 '
@@ -923,7 +939,7 @@ end function
 
 ' Shared by PaintPolyline and PaintCurve: both stroke an open run of vertices with the same
 ' pen settings, and differ only in which Graphics call consumes the points.
-private sub CBufApplySeriesPen( byval pPen as CGpPen ptr )
+private sub CBufApplySeriesPen( byval pPen as CGpPen ptr, byval nDash as long = PS_PENDASH_SOLID )
     if pPen = 0 then exit sub
     ' Round joins and caps. The default MiterJoin spikes at any sharp reversal, and chart
     ' data supplies those constantly -- a series that drops from its maximum to its minimum
@@ -931,6 +947,29 @@ private sub CBufApplySeriesPen( byval pPen as CGpPen ptr )
     pPen->SetLineJoin( LineJoinRound )
     pPen->SetStartCap( LineCapRound )
     pPen->SetEndCap( LineCapRound )
+
+    ' Dash lengths are in PEN-WIDTH UNITS, which is what makes one pattern serve every width:
+    ' a 2px dashed series has dashes twice as long as a 1px one and the two read as the same
+    ' style. See the PS_PENDASH comment in the .bi for why these are stated rather than taken
+    ' from GDI+'s DashStyle enum.
+    '
+    ' The dash CAP is left flat on purpose. A round dash cap at a 1px pen turns every dot into
+    ' a smudge two-thirds the length of the gap beside it, which is the one thing the pattern
+    ' was chosen to avoid.
+    dim as single pat(0 to 3)
+    dim as long n = 0
+    select case nDash
+    case PS_PENDASH_DASH
+        pat(0) = 4.0 : pat(1) = 3.0 : n = 2
+    case PS_PENDASH_DOT
+        pat(0) = 1.0 : pat(1) = 2.5 : n = 2
+    case PS_PENDASH_DASHDOT
+        pat(0) = 4.0 : pat(1) = 2.5 : pat(2) = 1.0 : pat(3) = 2.5 : n = 4
+    end select
+    if n > 0 then
+        pPen->SetDashCap( DashCapFlat )
+        pPen->SetDashPattern( @pat(0), n )
+    end if
 end sub
 
 ' The pen cache is shared with every other method on this buffer, so the join/cap settings
@@ -941,6 +980,10 @@ private sub CBufResetSeriesPen( byval pPen as CGpPen ptr )
     pPen->SetLineJoin( LineJoinMiter )
     pPen->SetStartCap( LineCapFlat )
     pPen->SetEndCap( LineCapFlat )
+    ' The dash pattern has to come off too, and this is the reason the reset exists at all:
+    ' leave it on and the next PaintBorderRect on this buffer draws a dashed frame it never
+    ' asked for, on a control that has nothing to do with charts.
+    pPen->SetDashStyle( DashStyleSolid )
 end sub
 
 function PsBufferPaint.PaintPolyline( _
@@ -969,7 +1012,7 @@ function PsBufferPaint.PaintPolyline( _
     next
 
     dim as CGpPen ptr pPen = this.PenFor( CBufToARGB( _pencolor, _penalpha ), csng(penWidth) )
-    CBufApplySeriesPen( pPen )
+    CBufApplySeriesPen( pPen, _pendash )
     g->DrawLines( pPen, @ptsF(0), nCount )
     CBufResetSeriesPen( pPen )
 
@@ -1009,7 +1052,7 @@ function PsBufferPaint.PaintCurve( _
     next
 
     dim as CGpPen ptr pPen = this.PenFor( CBufToARGB( _pencolor, _penalpha ), csng(penWidth) )
-    CBufApplySeriesPen( pPen )
+    CBufApplySeriesPen( pPen, _pendash )
     g->DrawCurve( pPen, @ptsF(0), nCount, tension )
     CBufResetSeriesPen( pPen )
 

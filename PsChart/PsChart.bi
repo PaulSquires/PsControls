@@ -84,6 +84,33 @@ enum
     CHT_SYM_TRIANGLE
 end enum
 
+' How a COLUMN chart arranges the series within one category.
+'
+'   GROUPED  side by side, one slot divided between them. The default, and what every
+'            existing column chart has always drawn.
+'   STACKED  one bar per category, the series piled up it. Positives stack UP from the
+'            baseline and negatives stack DOWN from it, so a category holding both reads as
+'            two piles meeting at zero rather than as one pile that cancels itself out.
+'
+' HLOC and pie ignore it; a line chart ignores it too (a stacked line is an area chart, and
+' the way to that here is PsChart_SetSeriesFill).
+enum
+    CHT_COL_GROUPED = 0
+    CHT_COL_STACKED
+end enum
+
+' How a LINE series' stroke is broken. SOLID is the default and every existing chart keeps it.
+'
+' This exists so a forecast can be told apart from the actual data WITHOUT spending a colour
+' on it -- the two runs are the same quantity and giving them different colours says they are
+' different quantities. Column and HLOC charts ignore it: there is no polyline to break.
+enum
+    CHT_LINE_SOLID = 0
+    CHT_LINE_DASH
+    CHT_LINE_DOT
+    CHT_LINE_DASHDOT
+end enum
+
 ' Which edge the legend takes. TOP/BOTTOM lay the entries out in a row, LEFT/RIGHT in a
 ' column, and the block is measured before the plot rect is carved so the plot never has to
 ' shrink twice.
@@ -194,9 +221,16 @@ type PSCHART_SERIES
     bHasColor  as boolean
     SeriesColor as COLORREF
     nLineWidth as long = PSCHART_DEFAULT_LINEWIDTH    ' raw px; the caller scales
+    nLineStyle as long = CHT_LINE_SOLID               ' line series only
     nSymbol    as long = CHT_SYM_NONE
     nSymbolSize as long = PSCHART_DEFAULT_SYMBOLSIZE
     bSmooth    as boolean = false     ' cardinal spline instead of straight segments
+    ' Area fill between the polyline and the VALUE BASELINE. An explicit flag rather than a
+    ' CLR_NONE sentinel, for the reason stated on PSCHART_POINT.bHasColor: every COLORREF
+    ' value is a legal colour.
+    bHasFill   as boolean = false
+    FillColor  as COLORREF
+    nFillAlpha as long = 255          ' 0..255; only read when bHasFill
     bVisible   as boolean = true      ' hidden series are excluded from the AXIS RANGE too,
                                       ' not merely skipped when drawing
 
@@ -221,6 +255,25 @@ sub PSCHART_SERIES.EnsurePoints( byval n as long )
         redim preserve this.points( 0 to newcap - 1 )
     end if
 end sub
+
+
+' ========================================================================================
+' A FILLED BAND BETWEEN TWO LINE SERIES.
+'
+' Held on the CHART rather than on either series, because a band is a relationship and not a
+' property of one of its edges: storing it on seriesLo would leave the question of what
+' happens when seriesHi is deleted answered in two places.
+'
+' The pair is the identity. Setting a band for a pair that already has one REPLACES it rather
+' than stacking a second translucent fill in the same place, which is what a host repeating
+' its setup on a theme change would otherwise get.
+' ========================================================================================
+type PSCHART_BAND
+    iLo    as long = -1
+    iHi    as long = -1
+    clr    as COLORREF
+    nAlpha as long = 255
+end type
 
 
 ' ========================================================================================
@@ -356,6 +409,9 @@ type PSCHART
     series(any)    as PSCHART_SERIES
     seriesCount    as long
 
+    bands(any)     as PSCHART_BAND
+    bandCount      as long
+
     ' Bulk population. BeginUpdate/EndUpdate NEST -- a depth counter, not a flag, so a helper
     ' that brackets its own work does not cancel its caller's batch on the way out.
     updateDepth    as long
@@ -389,6 +445,7 @@ type PSCHART
     ' --- column ---------------------------------------------------------------------------
     nBarGap        as long          ' DPI-scaled at Create
     nGroupGapPct   as long = PSCHART_DEFAULT_GROUPGAPPCT
+    nColumnMode    as long = CHT_COL_GROUPED
 
     ' --- HLOC -----------------------------------------------------------------------------
     nHlocTick      as long          ' DPI-scaled at Create
@@ -444,6 +501,9 @@ type PSCHART
     declare function IsValidPoint( byval iSer as long, byval iPt as long ) as boolean
     declare function GetPoint( byval iSer as long, byval iPt as long ) as PSCHART_POINT ptr
     declare function AddSeries() as long
+    ' The band whose pair is {a,b}, in EITHER order, or -1. Unordered because a host that
+    ' clears a band it set has no reason to remember which argument it put first.
+    declare function FindBand( byval a as long, byval b as long ) as long
     declare sub      ClearAll()
     declare function CategoryCount() as long
     declare function VisibleSeriesCount() as long
@@ -458,6 +518,10 @@ type PSCHART
     ' only because the axis charts and the pie share none of it, not because either is
     ' independently callable -- both assume LayoutChart has already resolved the rects.
     declare sub      LayoutPoints()
+    ' The stacked-column path. Split out because it is the one layout that has to run
+    ' CATEGORY-outer and series-inner -- a segment's position depends on what was stacked
+    ' below it, which the ordinary series-outer loop has no way to know.
+    declare sub      LayoutStackedColumns()
     declare sub      LayoutPieSlices()
     ' What slice iPt's label says, per nPieLabelMode. Called by BOTH layout (to measure it)
     ' and the renderer (to draw it) -- one function, so the string that was measured is
@@ -504,6 +568,15 @@ function PSCHART.GetPoint( byval iSer as long, byval iPt as long ) as PSCHART_PO
     return @this.series(iSer).points(iPt)
 end function
 
+function PSCHART.FindBand( byval a as long, byval b as long ) as long
+    for k as long = 0 to this.bandCount - 1
+        dim as boolean bSame = (this.bands(k).iLo = a) andalso (this.bands(k).iHi = b)
+        dim as boolean bSwap = (this.bands(k).iLo = b) andalso (this.bands(k).iHi = a)
+        if bSame orelse bSwap then return k
+    next
+    return -1
+end function
+
 function PSCHART.AddSeries() as long
     dim as long cap = ubound(this.series) + 1
     if this.seriesCount >= cap then
@@ -519,9 +592,13 @@ function PSCHART.AddSeries() as long
         .bHasColor   = false
         .SeriesColor = 0
         .nLineWidth  = PSCHART_DEFAULT_LINEWIDTH
+        .nLineStyle  = CHT_LINE_SOLID
         .nSymbol     = CHT_SYM_NONE
         .nSymbolSize = PSCHART_DEFAULT_SYMBOLSIZE
         .bSmooth     = false
+        .bHasFill    = false
+        .FillColor   = 0
+        .nFillAlpha  = 255
         .bVisible    = true
         .pointCount  = 0
     end with
@@ -542,6 +619,10 @@ sub PSCHART.ClearAll()
         this.series(i).SeriesName = ""
     next
     this.seriesCount = 0
+    ' Bands go with them. A band names two series by INDEX, so one left behind would either
+    ' silently draw against whatever series is reloaded into those slots or -- worse -- look
+    ' correct for one repopulation and wrong for the next.
+    this.bandCount = 0
     this.nHotSeries = -1
     this.nHotPoint = -1
     this.Refresh()
@@ -656,6 +737,43 @@ sub PSCHART.ResolveRange()
 
     dim as double rawMin = 0.0, rawMax = 0.0
     dim as boolean bAny = false
+
+    ' A STACKED COLUMN CHART IS SCALED BY ITS TOTALS, not by its tallest single value. Scaling
+    ' to the largest point would put every stack off the top of the plot, which is the one
+    ' failure a stacked chart cannot survive.
+    '
+    ' Positives and negatives are totalled SEPARATELY, because that is how they are drawn: a
+    ' category holding +5 and -5 needs a range covering both, not a net total of zero that
+    ' would clip the two bars it actually draws.
+    if (this.nChartType = PSCHART_TYPE_COLUMN) andalso (this.nColumnMode = CHT_COL_STACKED) then
+        dim as long nCat = this.CategoryCount()
+        for j as long = 0 to nCat - 1
+            dim as double sumPos = 0.0, sumNeg = 0.0
+            for i as long = 0 to this.seriesCount - 1
+                if this.series(i).bVisible = false then continue for
+                if j >= this.series(i).pointCount then continue for
+                dim as double v = this.series(i).points(j).Value
+                if v >= 0.0 then sumPos += v else sumNeg += v
+            next
+            if bAny = false then
+                rawMin = sumNeg : rawMax = sumPos : bAny = true
+            else
+                if sumNeg < rawMin then rawMin = sumNeg
+                if sumPos > rawMax then rawMax = sumPos
+            end if
+        next
+        if rawMin > 0.0 then rawMin = 0.0
+        if rawMax < 0.0 then rawMax = 0.0
+
+        dim as double fLoS, fHiS, fSS
+        CHT_NiceRange( rawMin, rawMax, this.nTickHint, fLoS, fHiS, fSS )
+        this.fMin = fLoS
+        this.fMax = fHiS
+        this.fStep = fSS
+        this.nResDecimals = iif( this.nDecimals = PSCHART_DECIMALS_AUTO, _
+                                 CHT_AutoDecimals(fSS), this.nDecimals )
+        exit sub
+    end if
 
     for i as long = 0 to this.seriesCount - 1
         if this.series(i).bVisible = false then continue for
@@ -960,8 +1078,84 @@ end sub
 ' renderer's job (PsBufferPaint.SetClipRect), not layout's, because a line entering and
 ' leaving the top of the plot must still be drawn through the part that is visible.
 ' ========================================================================================
+' ----------------------------------------------------------------------------------------
+' STACKED COLUMNS. One bar per category, the visible series piled up it.
+'
+' CATEGORY-outer and series-inner, which is the whole reason this is not folded into
+' LayoutPoints: a segment starts where the segment below it ended, and the ordinary
+' series-outer loop has no place to carry that running total.
+'
+' The rects written here are the SAME ones the hit test and PsChart_GetPointRect read, so a
+' click inside segment 2 answers segment 2 for free -- there is no second set of numbers that
+' could disagree.
+' ----------------------------------------------------------------------------------------
+sub PSCHART.LayoutStackedColumns()
+    ' Hidden series get EMPTY rects rather than stale ones, exactly as the grouped path does:
+    ' the hit test walks every point of every series and a leftover rect would keep answering.
+    for i as long = 0 to this.seriesCount - 1
+        if this.series(i).bVisible then continue for
+        for j as long = 0 to this.series(i).pointCount - 1
+            SetRectEmpty( @this.series(i).points(j).rc )
+            this.series(i).points(j).ptPlot.x = 0
+            this.series(i).points(j).ptPlot.y = 0
+        next
+    next
+
+    dim as long gap = this.nGroupGapPct
+    if gap < 0 then gap = 0
+    if gap > 90 then gap = 90
+    ' The whole slot less the group gap, undivided: a stack is ONE bar however many series
+    ' are piled up it, so nBarGap and the visible-series count play no part here.
+    dim as single groupW = this.fSlotWidth * (1.0 - csng(gap) / 100.0)
+
+    for j as long = 0 to this.nCatCount - 1
+        dim as long cx = this.SlotCenterX( j )
+        dim as long bl = clng( csng(cx) - groupW / 2.0 )
+        dim as long br = clng( csng(cx) + groupW / 2.0 )
+        if br <= bl then br = bl + 1
+
+        ' The two running totals, in VALUE space rather than pixels. Accumulating pixels
+        ' instead would round once per segment and let a tall stack drift off its own total.
+        dim as double accPos = 0.0, accNeg = 0.0
+
+        for i as long = 0 to this.seriesCount - 1
+            if this.series(i).bVisible = false then continue for
+            if j >= this.series(i).pointCount then continue for
+            dim as PSCHART_POINT ptr p = @this.series(i).points(j)
+
+            dim as long yFrom, yTo
+            if p->Value >= 0.0 then
+                yFrom = this.ValueToY( accPos )
+                accPos += p->Value
+                yTo = this.ValueToY( accPos )
+            else
+                yFrom = this.ValueToY( accNeg )
+                accNeg += p->Value
+                yTo = this.ValueToY( accNeg )
+            end if
+
+            p->rc.left  = bl
+            p->rc.right = br
+            if yTo <= yFrom then
+                p->rc.top = yTo : p->rc.bottom = yFrom
+            else
+                p->rc.top = yFrom : p->rc.bottom = yTo
+            end if
+            ' ptPlot is the segment's OUTER edge -- the end it grew to, not the end it grew
+            ' from -- so a hot highlight anchors where the value actually landed.
+            p->ptPlot.x = (bl + br) \ 2
+            p->ptPlot.y = yTo
+        next
+    next
+end sub
+
 sub PSCHART.LayoutPoints()
     dim as long nVis = this.VisibleSeriesCount()
+
+    if (this.nChartType = PSCHART_TYPE_COLUMN) andalso (this.nColumnMode = CHT_COL_STACKED) then
+        this.LayoutStackedColumns()
+        exit sub
+    end if
 
     ' Column bar geometry is per-GROUP and identical for every category, so it is computed
     ' once here rather than per point.
@@ -1223,6 +1417,34 @@ declare function PsChart_SetSeriesColor( byval hChart as HWND, byval iSeries as 
 ' Drop an explicit series colour and go back to the palette entry for that index.
 declare function PsChart_ClearSeriesColor( byval hChart as HWND, byval iSeries as long ) as boolean
 declare function PsChart_SetSeriesLineWidth( byval hChart as HWND, byval iSeries as long, byval nWidth as long ) as boolean
+' Fill the area between a LINE series' polyline and the VALUE BASELINE -- the same baseline a
+' column chart's bars stand on, which is value 0 clamped into the plot. Off by default.
+'
+' nAlpha is 0..255 and clamped. A fill is drawn UNDER every polyline, so a translucent one
+' shows the series it belongs to and any series behind it; an opaque one hides everything
+' beneath it except the lines themselves, which is usually not what you want.
+declare function PsChart_SetSeriesFill( byval hChart as HWND, byval series as integer, byval clrFill as COLORREF, byval nAlpha as long ) as boolean
+declare function PsChart_ClearSeriesFill( byval hChart as HWND, byval series as integer ) as boolean
+
+' Fill BETWEEN two line series: seriesHi walked forward, seriesLo walked backward, the polygon
+' closed. This is how a projection shows an uncertainty RANGE rather than two unrelated
+' forecast lines, which is the thing two separate area fills cannot say.
+'
+' The PAIR is the identity: setting a band for a pair that already has one replaces it rather
+' than stacking a second fill in the same place. ClearSeriesBand takes the pair in either
+' order. Both series must be valid, visible and hold at least two points, or the band is
+' carried but draws nothing.
+'
+' The names are a description, not a constraint -- nothing checks that seriesHi is actually
+' above seriesLo. Where the two cross, the ribbon self-intersects and the crossing reads as a
+' pinch, which is an honest picture of data that crossed.
+declare function PsChart_SetSeriesBand( byval hChart as HWND, byval seriesLo as integer, byval seriesHi as integer, byval clrFill as COLORREF, byval nAlpha as long ) as boolean
+declare function PsChart_ClearSeriesBand( byval hChart as HWND, byval seriesLo as integer, byval seriesHi as integer ) as boolean
+
+' LINE SERIES ONLY -- a column or HLOC chart has no polyline to break and ignores it. One of
+' the CHT_LINE_* constants; an unrecognised one is stored as CHT_LINE_SOLID.
+declare function PsChart_SetSeriesLineStyle( byval hChart as HWND, byval series as integer, byval nStyle as long ) as boolean
+declare function PsChart_GetSeriesLineStyle( byval hChart as HWND, byval series as integer ) as long
 declare function PsChart_SetSeriesSymbol( byval hChart as HWND, byval iSeries as long, byval nSymbol as long, byval nSize as long = PSCHART_DEFAULT_SYMBOLSIZE ) as boolean
 declare function PsChart_SetSeriesSmooth( byval hChart as HWND, byval iSeries as long, byval bSmooth as boolean ) as boolean
 ' A hidden series is excluded from the AXIS RANGE as well as from the drawing, so hiding the
@@ -1296,6 +1518,12 @@ declare sub      PsChart_SetSubtitleFont( byval hChart as HWND, byval hFont as H
 declare sub      PsChart_SetBarGap( byval hChart as HWND, byval nGap as long )
 ' Percent of each category slot left empty BETWEEN groups. Clamped 0..90.
 declare sub      PsChart_SetGroupGapPercent( byval hChart as HWND, byval nPct as long )
+' CHT_COL_GROUPED (the default) or CHT_COL_STACKED. Column charts only -- accepted and stored
+' on any chart, but only a column chart reads it. Stacking rescales the value axis to the
+' STACK TOTALS, and the hit test and PsChart_GetPointRect follow the segments automatically:
+' they read the rects this produces and there is no second set of numbers to disagree.
+declare function PsChart_SetColumnMode( byval hChart as HWND, byval nMode as long ) as boolean
+declare function PsChart_GetColumnMode( byval hChart as HWND ) as long
 
 ' --- HLOC ---------------------------------------------------------------------------------------
 declare sub      PsChart_SetHlocTickWidth( byval hChart as HWND, byval nWidth as long )
@@ -1351,5 +1579,17 @@ declare sub      PsChart_SetHotChangeCallback( byval hChart as HWND, byval userf
 ' screen does -- PsDatePicker once shipped a probe that passed while the painter drew a flat
 ' rectangle, and that is the failure these are shaped to make impossible.
 declare function PsChart_CountRenderedTones( byval hChart as HWND ) as long
+' Count the pixels inside the PLOT RECT that are NOT clrBack -- the series' ink, in other
+' words, when clrBack is the plot's own background. Every pixel of the rect, not a sample
+' grid: this answers "how much of the line got drawn", and a 32x32 grid over a plot is far
+' too coarse to see a dash pattern at all. Its cost is a GetPixel per plot pixel, so it
+' belongs in a test and nowhere near a repaint.
+declare function PsChart_CountPlotInkPixels( byval hChart as HWND, byval clrBack as COLORREF ) as long
+' The colour of ONE rendered pixel, in client coordinates. This is what lets a test assert a
+' fill arithmetically -- sample a point that must be inside the band and one that must not --
+' rather than looking at a screenshot and deciding it seems right. Returns CLR_INVALID for a
+' point outside the client rect or a render that failed, which is a value GetPixel itself
+' uses and no real pixel can be.
+declare function PsChart_GetRenderedPixel( byval hChart as HWND, byval x as long, byval y as long ) as COLORREF
 declare function PsChart_HashRenderedPart( byval hChart as HWND ) as ulong
 declare function PsChart_RunSelfTest( byval hWndParent as HWND ) as long

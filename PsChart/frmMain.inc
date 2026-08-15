@@ -9,7 +9,7 @@
 
 dim shared gCaptions( 0 to CHART_COUNT - 1 ) as DWSTRING
 
-#define CELL_COLS        3
+#define CELL_COLS        4
 #define CELL_ROWS        2
 #define SHEET_MARGIN    14
 #define CAPTION_HEIGHT  22
@@ -210,6 +210,67 @@ end sub
 
 
 ' ========================================================================================
+' The specimen for the three additive options: a dashed forecast, an area fill under the
+' actual data, and a band showing the forecast's uncertainty RANGE.
+'
+' THE FORECAST IS THE SAME COLOUR AS THE ACTUAL DATA, on purpose. It is the same quantity,
+' and giving it a second colour would say it is a different one; the dash is what separates
+' them. That is the whole reason PsChart_SetSeriesLineStyle exists.
+'
+' Series order is the draw order, so the band's two edges go in first, the forecast next and
+' the actual line last -- where the forecast overlays the actual for the historical months,
+' the solid line is the one on top.
+' ========================================================================================
+private sub LoadForecastSeries( byval hChart as HWND, byval pWindow as CWindow ptr )
+    dim as DWSTRING cats(0 to 11) = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", _
+                                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" }
+    ' Through Jul the three projections agree with the record, so the band has no width there
+    ' and opens only where the data stops -- which is the picture a fan chart exists to draw.
+    dim as double act(0 to 6)  = { 100, 108, 104, 115, 121, 118, 127 }
+    dim as double fc(0 to 11)  = { 100, 108, 104, 115, 121, 118, 127, 133, 138, 146, 151, 159 }
+    dim as double lo(0 to 11)  = { 100, 108, 104, 115, 121, 118, 127, 127, 129, 133, 135, 140 }
+    dim as double hi(0 to 11)  = { 100, 108, 104, 115, 121, 118, 127, 139, 148, 159, 168, 180 }
+
+    dim as COLORREF clrData = BGR( 46,120,200)
+    dim as COLORREF clrEdge = BGR(150,175,205)
+
+    PsChart_BeginUpdate( hChart )
+    dim as long sLo = PsChart_AddSeries( hChart, "Low" )
+    dim as long sHi = PsChart_AddSeries( hChart, "High" )
+    dim as long sFc = PsChart_AddSeries( hChart, "Forecast" )
+    dim as long sAc = PsChart_AddSeries( hChart, "Actual" )
+    for j as long = 0 to 11
+        PsChart_AddPoint( hChart, sLo, cats(j), lo(j) )
+        PsChart_AddPoint( hChart, sHi, cats(j), hi(j) )
+        PsChart_AddPoint( hChart, sFc, cats(j), fc(j) )
+        if j <= 6 then PsChart_AddPoint( hChart, sAc, cats(j), act(j) )
+    next
+    PsChart_EndUpdate( hChart )
+
+    ' The band's own edges: a hairline dotted rule each, so the range has a boundary without
+    ' a second solid line competing with the forecast for attention.
+    PsChart_SetSeriesColor( hChart, sLo, clrEdge )
+    PsChart_SetSeriesColor( hChart, sHi, clrEdge )
+    PsChart_SetSeriesLineStyle( hChart, sLo, CHT_LINE_DOT )
+    PsChart_SetSeriesLineStyle( hChart, sHi, CHT_LINE_DOT )
+    PsChart_SetSeriesLineWidth( hChart, sLo, pWindow->ScaleX(1) )
+    PsChart_SetSeriesLineWidth( hChart, sHi, pWindow->ScaleX(1) )
+
+    PsChart_SetSeriesColor( hChart, sFc, clrData )
+    PsChart_SetSeriesLineStyle( hChart, sFc, CHT_LINE_DASH )
+    PsChart_SetSeriesLineWidth( hChart, sFc, pWindow->ScaleX(2) )
+
+    PsChart_SetSeriesColor( hChart, sAc, clrData )
+    PsChart_SetSeriesLineWidth( hChart, sAc, pWindow->ScaleX(2) )
+    ' Under the record only, and translucent: an opaque fill would hide the band's lower half
+    ' and the gridlines with it.
+    PsChart_SetSeriesFill( hChart, sAc, clrData, 60 )
+
+    PsChart_SetSeriesBand( hChart, sLo, sHi, clrData, 46 )
+end sub
+
+
+' ========================================================================================
 ' frmMain_Show
 ' ========================================================================================
 function frmMain_Show( byval hWndParent as HWND ) as LRESULT
@@ -221,7 +282,9 @@ function frmMain_Show( byval hWndParent as HWND ) as LRESULT
     ghFont(GUIFONTBOLD_9) = pWindow->CreateFont( GUIFONT, 9, FW_HEAVY )
     ghFont(GUIFONTBOLD_12)= pWindow->CreateFont( GUIFONT, 12, FW_HEAVY )
 
-    HWND_FRMMAIN = pWindow->Create( null, APPNAME, @frmMain_WndProc, 60, 60, 1400, 860 )
+    ' Wider than it was: the sheet grew a fourth column when the forecast cell was added, and
+    ' at the old width every chart would have lost a quarter of its plot to make room.
+    HWND_FRMMAIN = pWindow->Create( null, APPNAME, @frmMain_WndProc, 60, 60, 1760, 860 )
 
     gCaptions(CHART_LINE)     = "Line -- three series, straight segments"
     gCaptions(CHART_COLUMN)   = "Column -- three series, grouped"
@@ -229,11 +292,14 @@ function frmMain_Show( byval hWndParent as HWND ) as LRESULT
     gCaptions(CHART_PIE)      = "Pie -- value labels inside the wedges"
     gCaptions(CHART_DOUGHNUT) = "Doughnut -- exploded slice, name + percent on leaders"
     gCaptions(CHART_NEGATIVE) = "Column -- negative values below the origin"
+    gCaptions(CHART_FORECAST) = "Line -- dashed forecast, area fill, uncertainty band"
+    gCaptions(CHART_STACKED)  = "Column -- stacked, axis scaled to the stack totals"
 
     ' --- every chart: create, font, theme -------------------------------------------------
     dim as long types(0 to CHART_COUNT - 1) = { _
             PSCHART_TYPE_LINE, PSCHART_TYPE_COLUMN, PSCHART_TYPE_HLOC, _
-            PSCHART_TYPE_PIE,  PSCHART_TYPE_PIE,    PSCHART_TYPE_COLUMN }
+            PSCHART_TYPE_PIE,  PSCHART_TYPE_PIE,    PSCHART_TYPE_COLUMN, _
+            PSCHART_TYPE_LINE, PSCHART_TYPE_COLUMN }
 
     for i as long = 0 to CHART_COUNT - 1
         ghChart(i) = PsChart_Create( HWND_FRMMAIN, IDC_FRMMAIN_CHART_FIRST + i, types(i) )
@@ -294,6 +360,19 @@ function frmMain_Show( byval hWndParent as HWND ) as LRESULT
         PsChart_SetLegendVisible( h, true )
         PsChart_SetLegendPosition( h, CHT_LEGEND_TOP )
     end scope
+
+    ' --- 6: the dash / fill / band specimen -----------------------------------------------
+    LoadForecastSeries( ghChart(CHART_FORECAST), pWindow )
+    PsChart_SetLegendVisible( ghChart(CHART_FORECAST), true )
+
+    ' --- 7: the same data as cell 1, stacked ----------------------------------------------
+    ' Deliberately the SAME three series as the grouped column cell, so the two sit on one
+    ' sheet and the only difference between them is the mode. Cell 1's axis stops at 8 (its
+    ' tallest bar); this one has to reach 13 (its tallest stack), and that is the whole
+    ' behaviour worth showing.
+    LoadFruitSeries( ghChart(CHART_STACKED) )
+    PsChart_SetColumnMode( ghChart(CHART_STACKED), CHT_COL_STACKED )
+    PsChart_SetLegendVisible( ghChart(CHART_STACKED), true )
 
     ' The line cell doubles as the symbol/spline specimen: series 3 is smoothed and carries
     ' circle markers, so both options are visible against two plain neighbours.

@@ -30,6 +30,11 @@ columns, 60 HLOC bars with the date labels auto-skipped, a pie with its values i
 a doughnut with one slice exploded and name/percent labels on leader lines, and columns straddling
 zero.
 
+The demo carries a seventh cell that this image predates — a forecast chart combining all three
+of the additive line options: an area fill under the recorded months, a dashed forecast continuing
+in **the same colour** as the actual data, and an uncertainty band between two dotted bounds that
+opens where the record stops.
+
 ## Requirements
 
 | File | Why |
@@ -212,8 +217,20 @@ fonts fall back to the label font.
 ## Behaviour and limits
 
 - **The chart type cannot change** after `PsChart_Create`.
-- **Column charts are grouped only.** There is no stacked mode and no horizontal (bar) orientation.
-- **Line charts have no area fill** under the line.
+- **Column charts are grouped or stacked** (`PsChart_SetColumnMode`), but there is no horizontal
+  (bar) orientation. Stacking scales the axis to the stack totals, and totals positives and
+  negatives separately — a category holding both reads as two piles meeting at zero, not as one
+  pile that cancels itself out.
+- **Area fills and bands paint under every line.** `PsChart_SetSeriesFill` fills between a line
+  series and the value baseline; `PsChart_SetSeriesBand` fills the ribbon between two line series,
+  which is how a projection shows an uncertainty *range* rather than two unrelated forecast lines.
+  Both are passes of their own — bands, then fills, then every polyline, then the markers — so
+  neither can ever cover a series it brackets. Pass a translucent alpha; an opaque fill hides
+  whatever is behind it. Nothing checks that `seriesHi` is actually above `seriesLo`: where the
+  two cross, the ribbon self-intersects and the crossing reads as a pinch.
+- **A band is suppressed, not destroyed, when an edge is hidden or emptied.** Unhiding the series
+  brings the same band back — a legend click cannot silently eat the host's setup. Bands name
+  their series by index and are dropped wholesale by `PsChart_Clear`.
 - **A pie reads series 0 only.** Additional series on a pie chart are ignored.
 - **`PsChart_SetPointExplode` is pie-only** and always addresses series 0.
 - **A horizontal legend gets one row.** Entries that do not fit are dropped rather than drawn over
@@ -252,6 +269,12 @@ Destroy it with `DestroyWindow`; the control frees its own state and tooltip.
 | `PsChart_SetSeriesColor( hChart, iSeries, clr ) as boolean` | Overrides the palette for this series. |
 | `PsChart_ClearSeriesColor( hChart, iSeries ) as boolean` | Drops the override; the series goes back to palette entry `iSeries mod 10`. |
 | `PsChart_SetSeriesLineWidth( hChart, iSeries, nWidth ) as boolean` | Line-chart pen width in raw pixels. Clamped to a minimum of 1. |
+| `PsChart_SetSeriesFill( hChart, series, clrFill, nAlpha ) as boolean` | Fills the area between a **line** series' polyline and the value baseline — the same baseline a column chart's bars stand on. `nAlpha` is 0–255, clamped. Off by default. |
+| `PsChart_ClearSeriesFill( hChart, series ) as boolean` | Turns the fill off. An alpha of 0 is a legal invisible fill, not a way off; this is the way off. |
+| `PsChart_SetSeriesBand( hChart, seriesLo, seriesHi, clrFill, nAlpha ) as boolean` | Fills **between two line series** — `seriesHi` walked forward, `seriesLo` walked backward, the polygon closed. The **pair is the identity**: setting a band for a pair that already has one replaces it rather than stacking a second fill in the same place. False for a bad index or for a series banded against itself. |
+| `PsChart_ClearSeriesBand( hChart, seriesLo, seriesHi ) as boolean` | Takes the pair in **either** order. False when there was no band for that pair, so you can tell a removal from a no-op. |
+| `PsChart_SetSeriesLineStyle( hChart, series, nStyle ) as boolean` | Breaks a **line** series' stroke: one of the `CHT_LINE_*` constants. Column and HLOC charts ignore it. An unrecognised style is stored as `CHT_LINE_SOLID`, so what you read back is always something that draws. |
+| `PsChart_GetSeriesLineStyle( hChart, series ) as long` | `CHT_LINE_SOLID` for a bad index as well as for an unstyled series. |
 | `PsChart_SetSeriesSymbol( hChart, iSeries, nSymbol, nSize = 6 ) as boolean` | A `CHT_SYM_*` marker at every vertex of a line series. `nSize` is clamped to a minimum of 2. |
 | `PsChart_SetSeriesSmooth( hChart, iSeries, bSmooth ) as boolean` | Draws the series as a cardinal spline instead of straight segments. A spline can overshoot its own data points; it is clipped to the plot. |
 | `PsChart_SetSeriesVisible( hChart, iSeries, bVisible ) as boolean` | Hiding a series removes it from the **axis range** as well as from the drawing, so hiding an outlier rescales the chart. Also clears the hot point if it was in that series. |
@@ -321,7 +344,9 @@ The control also honours `WM_SETFONT` / `WM_GETFONT`, which set and read the lab
 
 | Function | Behaviour |
 |---|---|
-| `PsChart_SetBarGap( hChart, nGap )` | Raw pixels between bars **within** one category group. Clamped at 0. |
+| `PsChart_SetColumnMode( hChart, nMode ) as boolean` | `CHT_COL_GROUPED` (the default) or `CHT_COL_STACKED`. An unrecognised mode falls back to grouped. Stacking rescales the value axis to the **stack totals**; hit testing and `PsChart_GetPointRect` follow the segments, because they read the same rects the renderer draws. |
+| `PsChart_GetColumnMode( hChart ) as long` | `CHT_COL_GROUPED` for a handle that is not a chart. |
+| `PsChart_SetBarGap( hChart, nGap )` | Raw pixels between bars **within** one category group. Ignored when stacked — a stack is one bar however many series are piled up it. Clamped at 0. |
 | `PsChart_SetGroupGapPercent( hChart, nPct )` | Percent of each category slot left empty between groups. Clamped 0…90. Default 25. |
 
 A bar narrower than one pixel is drawn as a one-pixel hairline rather than vanishing — the chart
@@ -401,14 +426,16 @@ Passing 0 to any of these removes the callback.
 
 ### Render probes
 
-Both render the control offscreen through the **same** function `WM_PAINT` uses, then read the
-resulting pixels on a fixed 32×32 sample grid. They exist so a regression check measures what is
-actually drawn rather than a parallel implementation of it. Neither touches the screen.
+These render the control offscreen through the **same** function `WM_PAINT` uses, then read the
+resulting pixels back. They exist so a regression check measures what is actually drawn rather
+than a parallel implementation of it. None of them touches the screen.
 
 | Function | Behaviour |
 |---|---|
-| `PsChart_CountRenderedTones( hChart ) as long` | How many distinct colours appear in the sample, capped at 64. A useful "did anything get drawn" check: an empty chart still returns at least its background and its gridlines, and adding data raises the count. |
+| `PsChart_CountRenderedTones( hChart ) as long` | How many distinct colours appear on a fixed 32×32 sample grid, capped at 64. A useful "did anything get drawn" check: an empty chart still returns at least its background and its gridlines, and adding data raises the count. |
 | `PsChart_HashRenderedPart( hChart ) as ulong` | An FNV-1a hash of the same sample. Identical state hashes identically; any visible change to the sampled pixels changes it. |
+| `PsChart_GetRenderedPixel( hChart, x, y ) as COLORREF` | The colour of one rendered pixel, in client coordinates. This is what lets a test assert a fill *arithmetically* — sample a point that must be inside it and one that must not — instead of looking at a screenshot and deciding it seems about right. `CLR_INVALID` for a point outside the client rect. |
+| `PsChart_CountPlotInkPixels( hChart, clrBack ) as long` | How many pixels inside the plot rect are **not** `clrBack` — the series' ink, when you pass the plot background. Every pixel of the rect, not a sample grid, because a 32×32 grid is far too coarse to see a dash pattern. That makes it a *test* probe: it costs one `GetPixel` per plot pixel and has no business near a repaint. |
 
 Both return 0 if the control has no client area yet.
 
@@ -568,7 +595,18 @@ data under the cursor does not fire it. It fires *after* the state is updated, s
 `CHT_SYM_NONE` (the default), `CHT_SYM_CIRCLE`, `CHT_SYM_SQUARE`, `CHT_SYM_DIAMOND`,
 `CHT_SYM_TRIANGLE`.
 
-### Legend position
+### Column mode
+
+`CHT_COL_GROUPED` (the default) and `CHT_COL_STACKED`. Column charts only — HLOC, pie and line
+ignore it. A stacked line chart is an area chart; the way to that here is `PsChart_SetSeriesFill`.
+
+### Line styles
+
+`CHT_LINE_SOLID` (the default), `CHT_LINE_DASH`, `CHT_LINE_DOT`, `CHT_LINE_DASHDOT`. Line series
+only. The dash lengths are in **pen-width units**, so one style reads the same at 1 px and at 3 px,
+and the patterns favour the gap over the dash — a dashed series has to be distinguishable from a
+solid one at the 1–2 px a chart series actually uses. Use this rather than a second colour when
+the two runs are the same quantity: a forecast drawn in a different colour reads as different data.
 
 `CHT_LEGEND_BOTTOM` (the default), `CHT_LEGEND_TOP`, `CHT_LEGEND_LEFT`, `CHT_LEGEND_RIGHT`.
 Top and bottom lay the entries out in one row; left and right in a column.
