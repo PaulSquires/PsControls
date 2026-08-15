@@ -293,12 +293,13 @@ function frmMain_Show( byval hWndParent as HWND ) as LRESULT
     gCaptions(CHART_DOUGHNUT) = "Doughnut -- exploded slice, name + percent on leaders"
     gCaptions(CHART_NEGATIVE) = "Column -- negative values below the origin"
     gCaptions(CHART_FORECAST) = "Line -- dashed forecast, area fill, uncertainty band"
+    gCaptions(CHART_STACKED)  = "Column -- stacked, axis scaled to the stack totals"
 
     ' --- every chart: create, font, theme -------------------------------------------------
     dim as long types(0 to CHART_COUNT - 1) = { _
             PSCHART_TYPE_LINE, PSCHART_TYPE_COLUMN, PSCHART_TYPE_HLOC, _
             PSCHART_TYPE_PIE,  PSCHART_TYPE_PIE,    PSCHART_TYPE_COLUMN, _
-            PSCHART_TYPE_LINE }
+            PSCHART_TYPE_LINE, PSCHART_TYPE_COLUMN }
 
     for i as long = 0 to CHART_COUNT - 1
         ghChart(i) = PsChart_Create( HWND_FRMMAIN, IDC_FRMMAIN_CHART_FIRST + i, types(i) )
@@ -364,6 +365,15 @@ function frmMain_Show( byval hWndParent as HWND ) as LRESULT
     LoadForecastSeries( ghChart(CHART_FORECAST), pWindow )
     PsChart_SetLegendVisible( ghChart(CHART_FORECAST), true )
 
+    ' --- 7: the same data as cell 1, stacked ----------------------------------------------
+    ' Deliberately the SAME three series as the grouped column cell, so the two sit on one
+    ' sheet and the only difference between them is the mode. Cell 1's axis stops at 8 (its
+    ' tallest bar); this one has to reach 13 (its tallest stack), and that is the whole
+    ' behaviour worth showing.
+    LoadFruitSeries( ghChart(CHART_STACKED) )
+    PsChart_SetColumnMode( ghChart(CHART_STACKED), CHT_COL_STACKED )
+    PsChart_SetLegendVisible( ghChart(CHART_STACKED), true )
+
     ' The line cell doubles as the symbol/spline specimen: series 3 is smoothed and carries
     ' circle markers, so both options are visible against two plain neighbours.
     PsChart_SetSeriesSmooth( ghChart(CHART_LINE), 2, true )
@@ -374,17 +384,6 @@ function frmMain_Show( byval hWndParent as HWND ) as LRESULT
     ' Geometry assertions, opt-in. Runs against the real form, so the charts it builds are
     ' created on a DPI-aware window exactly as the visible ones are.
     if environ("PSCHART_SELFTEST") = "1" then PsChart_RunSelfTest( HWND_FRMMAIN )
-
-    ' TEMPORARY regression probe -- removed before commit.
-    if environ("PSCHART_DEMOHASH") = "1" then
-        for i as long = 0 to CHART_COUNT - 1
-            SetWindowPos( ghChart(i), 0, 0, 0, 420, 380, SWP_NOZORDER or SWP_NOACTIVATE or SWP_NOMOVE )
-            dim as string sh = "DEMOHASH " & str(i) & " = " & hex( PsChart_HashRenderedPart( ghChart(i) ) )
-            print sh
-        next
-        frmMain_PositionCharts( HWND_FRMMAIN )
-        PostQuitMessage( 0 )
-    end if
 
     ShowWindow( HWND_FRMMAIN, SW_SHOW )
     UpdateWindow( HWND_FRMMAIN )

@@ -27,6 +27,7 @@ enum
     CHART_DOUGHNUT          ' doughnut + exploded slice + name/percent labels on leaders
     CHART_NEGATIVE          ' columns straddling zero, and a spline series with symbols
     CHART_FORECAST          ' dashed forecast, area fill, and an uncertainty band
+    CHART_STACKED           ' the same three series as CHART_COLUMN, stacked instead
     CHART_COUNT
 end enum
 
