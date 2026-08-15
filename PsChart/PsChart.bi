@@ -210,6 +210,12 @@ type PSCHART_SERIES
     nSymbol    as long = CHT_SYM_NONE
     nSymbolSize as long = PSCHART_DEFAULT_SYMBOLSIZE
     bSmooth    as boolean = false     ' cardinal spline instead of straight segments
+    ' Area fill between the polyline and the VALUE BASELINE. An explicit flag rather than a
+    ' CLR_NONE sentinel, for the reason stated on PSCHART_POINT.bHasColor: every COLORREF
+    ' value is a legal colour.
+    bHasFill   as boolean = false
+    FillColor  as COLORREF
+    nFillAlpha as long = 255          ' 0..255; only read when bHasFill
     bVisible   as boolean = true      ' hidden series are excluded from the AXIS RANGE too,
                                       ' not merely skipped when drawing
 
@@ -536,6 +542,9 @@ function PSCHART.AddSeries() as long
         .nSymbol     = CHT_SYM_NONE
         .nSymbolSize = PSCHART_DEFAULT_SYMBOLSIZE
         .bSmooth     = false
+        .bHasFill    = false
+        .FillColor   = 0
+        .nFillAlpha  = 255
         .bVisible    = true
         .pointCount  = 0
     end with
@@ -1237,6 +1246,15 @@ declare function PsChart_SetSeriesColor( byval hChart as HWND, byval iSeries as 
 ' Drop an explicit series colour and go back to the palette entry for that index.
 declare function PsChart_ClearSeriesColor( byval hChart as HWND, byval iSeries as long ) as boolean
 declare function PsChart_SetSeriesLineWidth( byval hChart as HWND, byval iSeries as long, byval nWidth as long ) as boolean
+' Fill the area between a LINE series' polyline and the VALUE BASELINE -- the same baseline a
+' column chart's bars stand on, which is value 0 clamped into the plot. Off by default.
+'
+' nAlpha is 0..255 and clamped. A fill is drawn UNDER every polyline, so a translucent one
+' shows the series it belongs to and any series behind it; an opaque one hides everything
+' beneath it except the lines themselves, which is usually not what you want.
+declare function PsChart_SetSeriesFill( byval hChart as HWND, byval series as integer, byval clrFill as COLORREF, byval nAlpha as long ) as boolean
+declare function PsChart_ClearSeriesFill( byval hChart as HWND, byval series as integer ) as boolean
+
 ' LINE SERIES ONLY -- a column or HLOC chart has no polyline to break and ignores it. One of
 ' the CHT_LINE_* constants; an unrecognised one is stored as CHT_LINE_SOLID.
 declare function PsChart_SetSeriesLineStyle( byval hChart as HWND, byval series as integer, byval nStyle as long ) as boolean
@@ -1375,5 +1393,11 @@ declare function PsChart_CountRenderedTones( byval hChart as HWND ) as long
 ' too coarse to see a dash pattern at all. Its cost is a GetPixel per plot pixel, so it
 ' belongs in a test and nowhere near a repaint.
 declare function PsChart_CountPlotInkPixels( byval hChart as HWND, byval clrBack as COLORREF ) as long
+' The colour of ONE rendered pixel, in client coordinates. This is what lets a test assert a
+' fill arithmetically -- sample a point that must be inside the band and one that must not --
+' rather than looking at a screenshot and deciding it seems right. Returns CLR_INVALID for a
+' point outside the client rect or a render that failed, which is a value GetPixel itself
+' uses and no real pixel can be.
+declare function PsChart_GetRenderedPixel( byval hChart as HWND, byval x as long, byval y as long ) as COLORREF
 declare function PsChart_HashRenderedPart( byval hChart as HWND ) as ulong
 declare function PsChart_RunSelfTest( byval hWndParent as HWND ) as long

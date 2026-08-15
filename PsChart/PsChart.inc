@@ -437,6 +437,43 @@ private sub CHT_RenderSymbol( byval b as PsBufferPaint ptr, byval nSymbol as lon
     end select
 end sub
 
+' ----------------------------------------------------------------------------------------
+' AREA FILLS. Every one of these paints UNDER every polyline, which is why it is a pass of
+' its own rather than something CHT_RenderLine does per series on its way past: a fill drawn
+' inline would cover the series drawn before it. Symbols stay on top for the same reason --
+' they are drawn by CHT_RenderLine, which runs after this.
+'
+' Alpha is the whole point. An opaque fill under a two-series chart hides one of them; the
+' host is expected to pass something translucent, and the demo does.
+' ----------------------------------------------------------------------------------------
+private sub CHT_RenderAreaFills( byval pChart as PSCHART ptr, byval b as PsBufferPaint ptr )
+    for i as long = 0 to pChart->seriesCount - 1
+        if pChart->series(i).bVisible = false then continue for
+        if pChart->series(i).bHasFill = false then continue for
+        dim as long n = pChart->series(i).pointCount
+        ' One point has no area. Two is the shortest run that encloses one.
+        if n < 2 then continue for
+
+        ' The polyline forward, then down to the baseline and back along it. The baseline is
+        ' nOriginY -- the SAME number the column renderer stands its bars on, resolved once by
+        ' LayoutChart and clamped into the plot. A second baseline computed here would drift
+        ' from that one the moment the value range stopped straddling zero.
+        dim as long nBase = pChart->nOriginY
+        redim as POINT pts( 0 to n + 1 )
+        for j as long = 0 to n - 1
+            pts(j) = pChart->series(i).points(j).ptPlot
+        next
+        pts(n).x     = pChart->series(i).points(n - 1).ptPlot.x
+        pts(n).y     = nBase
+        pts(n + 1).x = pChart->series(i).points(0).ptPlot.x
+        pts(n + 1).y = nBase
+
+        b->SetBackColorA( pChart->series(i).FillColor, _
+                          cubyte( pChart->series(i).nFillAlpha ) )
+        b->PaintPolygon( @pts(0), n + 2, 0 )
+    next
+end sub
+
 ' CHT_LINE_* is the chart's vocabulary and PS_PENDASH_* is the buffer's. They are deliberately
 ' two enums rather than one shared constant: PsBufferPaint is vendored into every control in
 ' the family and must not grow a dependency on a chart's idea of what a line style is.
@@ -819,7 +856,12 @@ private sub CHT_Render( byval pChart as PSCHART ptr, byval b as PsBufferPaint pt
         select case pChart->nChartType
         case PSCHART_TYPE_COLUMN : CHT_RenderColumn( pChart, b )
         case PSCHART_TYPE_HLOC   : CHT_RenderHloc( pChart, b )
-        case else                : CHT_RenderLine( pChart, b )
+        case else
+            ' STRICT Z-ORDER, and it is the whole reason these are three passes rather than
+            ' one loop: fills first, then every polyline over them, then the markers on top.
+            ' A band that covered the two lines it brackets would be worse than no band.
+            CHT_RenderAreaFills( pChart, b )
+            CHT_RenderLine( pChart, b )
         end select
         b->ResetClip()
 
@@ -1176,6 +1218,32 @@ function PsChart_SetSeriesLineWidth( byval hChart as HWND, byval iSeries as long
     if s = 0 then return false
     if nWidth < 1 then nWidth = 1
     s->nLineWidth = nWidth
+    pChart->Refresh()
+    return true
+end function
+
+function PsChart_SetSeriesFill( byval hChart as HWND, byval series as integer, byval clrFill as COLORREF, byval nAlpha as long ) as boolean
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return false
+    dim as PSCHART_SERIES ptr s = pChart->GetSeries( clng(series) )
+    if s = 0 then return false
+    if nAlpha < 0 then nAlpha = 0
+    if nAlpha > 255 then nAlpha = 255
+    s->bHasFill   = true
+    s->FillColor  = clrFill
+    s->nFillAlpha = nAlpha
+    pChart->Refresh()
+    return true
+end function
+
+' An alpha of 0 is a LEGAL fill that happens to be invisible, not a way to turn the fill off.
+' This is the way off, exactly as ClearSeriesColor is for a colour override.
+function PsChart_ClearSeriesFill( byval hChart as HWND, byval series as integer ) as boolean
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return false
+    dim as PSCHART_SERIES ptr s = pChart->GetSeries( clng(series) )
+    if s = 0 then return false
+    s->bHasFill = false
     pChart->Refresh()
     return true
 end function
@@ -1878,6 +1946,22 @@ function PsChart_CountRenderedTones( byval hChart as HWND ) as long
         next
     next
     return nSeen
+end function
+
+function PsChart_GetRenderedPixel( byval hChart as HWND, byval x as long, byval y as long ) as COLORREF
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return CLR_INVALID
+
+    dim as PsBufferPaint b
+    dim as RECT rc
+    if CHT_RenderOffscreen( pChart, @b, rc ) = false then return CLR_INVALID
+    dim as HDC hdc = b.getMemDC()
+    if hdc = 0 then return CLR_INVALID
+
+    dim as POINT pt
+    pt.x = x : pt.y = y
+    if PtInRect( @rc, pt ) = 0 then return CLR_INVALID
+    return GetPixel( hdc, x, y )
 end function
 
 function PsChart_CountPlotInkPixels( byval hChart as HWND, byval clrBack as COLORREF ) as long

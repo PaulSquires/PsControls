@@ -523,6 +523,69 @@ function PsChart_RunSelfTest( byval hWndParent as HWND ) as long
         end if
     end scope
 
+    ' --- area fill under a series ----------------------------------------------------------------------------
+    ' Asserted by SAMPLING NAMED PIXELS, not by eye. A flat series at a known value has a known
+    ' baseline and a known top edge, so "inside the fill" and "above the fill" are arithmetic.
+    scope
+        dim as HWND h = CHTTest_MakeChart( hWndParent, PSCHART_TYPE_LINE, 700, 400 )
+        if h <> 0 then
+            dim as PSCHART_COLORS clrs
+            PsChart_GetColors( h, @clrs )
+
+            ' A FLAT series, on purpose: every x has the same y, so one sample stands for the
+            ' whole run and no assertion below depends on where along it we looked.
+            dim as long s = PsChart_AddSeries( h, "s" )
+            for j as long = 0 to 9
+                PsChart_AddPoint( h, s, str(j), 50.0 )
+            next
+            ' Fixed range, so the baseline is the plot bottom and the line is exactly halfway
+            ' up it -- autoscaling a flat series would pick a range this test cannot predict.
+            PsChart_SetValueRange( h, 0.0, 100.0 )
+
+            dim as RECT rcPlot
+            PsChart_GetPlotRect( h, rcPlot )
+            dim as long yLine = PsChart_ValueToY( h, 50.0 )
+            dim as long xMid  = (rcPlot.left + rcPlot.right) \ 2
+            ' Well clear of the line's own 2px stroke in both directions.
+            dim as long yIn   = (yLine + rcPlot.bottom) \ 2      ' under the line, in the fill
+            dim as long yOut  = (rcPlot.top + yLine) \ 2         ' above the line, outside it
+
+            dim as long tonesBefore = PsChart_CountRenderedTones( h )
+            dim as COLORREF cInBefore = PsChart_GetRenderedPixel( h, xMid, yIn )
+
+            PsChart_SetSeriesFill( h, s, BGR(0,160,255), 128 )
+
+            dim as long tonesAfter = PsChart_CountRenderedTones( h )
+            dim as COLORREF cIn  = PsChart_GetRenderedPixel( h, xMid, yIn )
+            dim as COLORREF cOut = PsChart_GetRenderedPixel( h, xMid, yOut )
+
+            CHTTest_Check( "Fill: a fill adds tones to the surface", (tonesAfter > tonesBefore), _
+                           "before=" & str(tonesBefore) & " after=" & str(tonesAfter) )
+            CHTTest_Check( "Fill: a pixel between the line and the baseline changed colour", _
+                           (cIn <> cInBefore), "was=" & hex(cInBefore) & " now=" & hex(cIn) )
+            CHTTest_Check( "Fill: a pixel ABOVE the line did not -- the fill stops at the line", _
+                           (cOut = clrs.PlotBackColor), _
+                           "y=" & str(yOut) & " got=" & hex(cOut) & " want=" & hex(clrs.PlotBackColor) )
+            ' 128 alpha over the dark default background must land BETWEEN the two, which is
+            ' what proves the alpha was honoured rather than the colour painted flat.
+            CHTTest_Check( "Fill: the fill is translucent, not the flat colour asked for", _
+                           (cIn <> BGR(0,160,255)) andalso (cIn <> clrs.PlotBackColor), _
+                           "got=" & hex(cIn) & " opaque would be " & hex(BGR(0,160,255)) )
+
+            PsChart_ClearSeriesFill( h, s )
+            dim as COLORREF cCleared = PsChart_GetRenderedPixel( h, xMid, yIn )
+            CHTTest_Check( "Fill: ClearSeriesFill puts the background back", _
+                           (cCleared = cInBefore), _
+                           "was=" & hex(cInBefore) & " now=" & hex(cCleared) )
+
+            CHTTest_Check( "Fill: an out-of-range series is rejected and does not fault", _
+                           (PsChart_SetSeriesFill( h, 99, BGR(255,0,0), 128 ) = false) andalso _
+                           (PsChart_ClearSeriesFill( h, 99 ) = false), "rejected" )
+
+            DestroyWindow( h )
+        end if
+    end scope
+
     dim as string sSum = "===== " & str(gCHT_TestCount) & " checks, " & str(gCHT_FailCount) & " failed ====="
     print sSum
     return gCHT_FailCount
