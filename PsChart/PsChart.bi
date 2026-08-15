@@ -243,6 +243,25 @@ end sub
 
 
 ' ========================================================================================
+' A FILLED BAND BETWEEN TWO LINE SERIES.
+'
+' Held on the CHART rather than on either series, because a band is a relationship and not a
+' property of one of its edges: storing it on seriesLo would leave the question of what
+' happens when seriesHi is deleted answered in two places.
+'
+' The pair is the identity. Setting a band for a pair that already has one REPLACES it rather
+' than stacking a second translucent fill in the same place, which is what a host repeating
+' its setup on a theme change would otherwise get.
+' ========================================================================================
+type PSCHART_BAND
+    iLo    as long = -1
+    iHi    as long = -1
+    clr    as COLORREF
+    nAlpha as long = 255
+end type
+
+
+' ========================================================================================
 ' WHAT A PAINT CALLBACK RECEIVES.
 '
 ' A PsBufferPaint ptr -- the control's OWN buffer for this repaint -- and every rect layout
@@ -375,6 +394,9 @@ type PSCHART
     series(any)    as PSCHART_SERIES
     seriesCount    as long
 
+    bands(any)     as PSCHART_BAND
+    bandCount      as long
+
     ' Bulk population. BeginUpdate/EndUpdate NEST -- a depth counter, not a flag, so a helper
     ' that brackets its own work does not cancel its caller's batch on the way out.
     updateDepth    as long
@@ -463,6 +485,9 @@ type PSCHART
     declare function IsValidPoint( byval iSer as long, byval iPt as long ) as boolean
     declare function GetPoint( byval iSer as long, byval iPt as long ) as PSCHART_POINT ptr
     declare function AddSeries() as long
+    ' The band whose pair is {a,b}, in EITHER order, or -1. Unordered because a host that
+    ' clears a band it set has no reason to remember which argument it put first.
+    declare function FindBand( byval a as long, byval b as long ) as long
     declare sub      ClearAll()
     declare function CategoryCount() as long
     declare function VisibleSeriesCount() as long
@@ -523,6 +548,15 @@ function PSCHART.GetPoint( byval iSer as long, byval iPt as long ) as PSCHART_PO
     return @this.series(iSer).points(iPt)
 end function
 
+function PSCHART.FindBand( byval a as long, byval b as long ) as long
+    for k as long = 0 to this.bandCount - 1
+        dim as boolean bSame = (this.bands(k).iLo = a) andalso (this.bands(k).iHi = b)
+        dim as boolean bSwap = (this.bands(k).iLo = b) andalso (this.bands(k).iHi = a)
+        if bSame orelse bSwap then return k
+    next
+    return -1
+end function
+
 function PSCHART.AddSeries() as long
     dim as long cap = ubound(this.series) + 1
     if this.seriesCount >= cap then
@@ -565,6 +599,10 @@ sub PSCHART.ClearAll()
         this.series(i).SeriesName = ""
     next
     this.seriesCount = 0
+    ' Bands go with them. A band names two series by INDEX, so one left behind would either
+    ' silently draw against whatever series is reloaded into those slots or -- worse -- look
+    ' correct for one repopulation and wrong for the next.
+    this.bandCount = 0
     this.nHotSeries = -1
     this.nHotPoint = -1
     this.Refresh()
@@ -1254,6 +1292,21 @@ declare function PsChart_SetSeriesLineWidth( byval hChart as HWND, byval iSeries
 ' beneath it except the lines themselves, which is usually not what you want.
 declare function PsChart_SetSeriesFill( byval hChart as HWND, byval series as integer, byval clrFill as COLORREF, byval nAlpha as long ) as boolean
 declare function PsChart_ClearSeriesFill( byval hChart as HWND, byval series as integer ) as boolean
+
+' Fill BETWEEN two line series: seriesHi walked forward, seriesLo walked backward, the polygon
+' closed. This is how a projection shows an uncertainty RANGE rather than two unrelated
+' forecast lines, which is the thing two separate area fills cannot say.
+'
+' The PAIR is the identity: setting a band for a pair that already has one replaces it rather
+' than stacking a second fill in the same place. ClearSeriesBand takes the pair in either
+' order. Both series must be valid, visible and hold at least two points, or the band is
+' carried but draws nothing.
+'
+' The names are a description, not a constraint -- nothing checks that seriesHi is actually
+' above seriesLo. Where the two cross, the ribbon self-intersects and the crossing reads as a
+' pinch, which is an honest picture of data that crossed.
+declare function PsChart_SetSeriesBand( byval hChart as HWND, byval seriesLo as integer, byval seriesHi as integer, byval clrFill as COLORREF, byval nAlpha as long ) as boolean
+declare function PsChart_ClearSeriesBand( byval hChart as HWND, byval seriesLo as integer, byval seriesHi as integer ) as boolean
 
 ' LINE SERIES ONLY -- a column or HLOC chart has no polyline to break and ignores it. One of
 ' the CHT_LINE_* constants; an unrecognised one is stored as CHT_LINE_SOLID.

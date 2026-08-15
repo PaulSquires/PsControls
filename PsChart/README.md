@@ -213,10 +213,16 @@ fonts fall back to the label font.
 
 - **The chart type cannot change** after `PsChart_Create`.
 - **Column charts are grouped only.** There is no stacked mode and no horizontal (bar) orientation.
-- **Area fills paint under every line.** `PsChart_SetSeriesFill` fills between a line series and
-  the value baseline; fills are a pass of their own, drawn before any polyline, so a fill can
-  never cover a series. Markers stay on top of both. Pass a translucent alpha — an opaque fill
-  hides whatever is behind it.
+- **Area fills and bands paint under every line.** `PsChart_SetSeriesFill` fills between a line
+  series and the value baseline; `PsChart_SetSeriesBand` fills the ribbon between two line series,
+  which is how a projection shows an uncertainty *range* rather than two unrelated forecast lines.
+  Both are passes of their own — bands, then fills, then every polyline, then the markers — so
+  neither can ever cover a series it brackets. Pass a translucent alpha; an opaque fill hides
+  whatever is behind it. Nothing checks that `seriesHi` is actually above `seriesLo`: where the
+  two cross, the ribbon self-intersects and the crossing reads as a pinch.
+- **A band is suppressed, not destroyed, when an edge is hidden or emptied.** Unhiding the series
+  brings the same band back — a legend click cannot silently eat the host's setup. Bands name
+  their series by index and are dropped wholesale by `PsChart_Clear`.
 - **A pie reads series 0 only.** Additional series on a pie chart are ignored.
 - **`PsChart_SetPointExplode` is pie-only** and always addresses series 0.
 - **A horizontal legend gets one row.** Entries that do not fit are dropped rather than drawn over
@@ -257,6 +263,8 @@ Destroy it with `DestroyWindow`; the control frees its own state and tooltip.
 | `PsChart_SetSeriesLineWidth( hChart, iSeries, nWidth ) as boolean` | Line-chart pen width in raw pixels. Clamped to a minimum of 1. |
 | `PsChart_SetSeriesFill( hChart, series, clrFill, nAlpha ) as boolean` | Fills the area between a **line** series' polyline and the value baseline — the same baseline a column chart's bars stand on. `nAlpha` is 0–255, clamped. Off by default. |
 | `PsChart_ClearSeriesFill( hChart, series ) as boolean` | Turns the fill off. An alpha of 0 is a legal invisible fill, not a way off; this is the way off. |
+| `PsChart_SetSeriesBand( hChart, seriesLo, seriesHi, clrFill, nAlpha ) as boolean` | Fills **between two line series** — `seriesHi` walked forward, `seriesLo` walked backward, the polygon closed. The **pair is the identity**: setting a band for a pair that already has one replaces it rather than stacking a second fill in the same place. False for a bad index or for a series banded against itself. |
+| `PsChart_ClearSeriesBand( hChart, seriesLo, seriesHi ) as boolean` | Takes the pair in **either** order. False when there was no band for that pair, so you can tell a removal from a no-op. |
 | `PsChart_SetSeriesLineStyle( hChart, series, nStyle ) as boolean` | Breaks a **line** series' stroke: one of the `CHT_LINE_*` constants. Column and HLOC charts ignore it. An unrecognised style is stored as `CHT_LINE_SOLID`, so what you read back is always something that draws. |
 | `PsChart_GetSeriesLineStyle( hChart, series ) as long` | `CHT_LINE_SOLID` for a bad index as well as for an unstyled series. |
 | `PsChart_SetSeriesSymbol( hChart, iSeries, nSymbol, nSize = 6 ) as boolean` | A `CHT_SYM_*` marker at every vertex of a line series. `nSize` is clamped to a minimum of 2. |

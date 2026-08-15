@@ -446,6 +446,40 @@ end sub
 ' Alpha is the whole point. An opaque fill under a two-series chart hides one of them; the
 ' host is expected to pass something translucent, and the demo does.
 ' ----------------------------------------------------------------------------------------
+' Bands go down FIRST, under the per-series area fills as well as under every polyline. A band
+' is the broad backdrop the fills and lines are read against, so a fill drawn over it still
+' shows the band's tint through its own alpha; the other order would hide the fill entirely
+' wherever the two overlap.
+private sub CHT_RenderBands( byval pChart as PSCHART ptr, byval b as PsBufferPaint ptr )
+    for k as long = 0 to pChart->bandCount - 1
+        dim as PSCHART_SERIES ptr sLo = pChart->GetSeries( pChart->bands(k).iLo )
+        dim as PSCHART_SERIES ptr sHi = pChart->GetSeries( pChart->bands(k).iHi )
+        ' A band whose series was hidden or emptied is CARRIED but not drawn, rather than
+        ' deleted: unhiding the series must bring the band back, or a legend click would
+        ' silently destroy the host's setup.
+        if (sLo = 0) orelse (sHi = 0) then continue for
+        if (sLo->bVisible = false) orelse (sHi->bVisible = false) then continue for
+        dim as long nHi = sHi->pointCount
+        dim as long nLo = sLo->pointCount
+        if (nHi < 2) orelse (nLo < 2) then continue for
+
+        ' Forward along the high edge, back along the low one -- the ribbon between two runs.
+        ' The two series are walked over their OWN point counts, not a shared minimum: a
+        ' forecast that runs two months past its companion should still be enclosed, and
+        ' closing the polygon early would leave the tail outside the band it belongs to.
+        redim as POINT pts( 0 to nHi + nLo - 1 )
+        for j as long = 0 to nHi - 1
+            pts(j) = sHi->points(j).ptPlot
+        next
+        for j as long = 0 to nLo - 1
+            pts(nHi + j) = sLo->points(nLo - 1 - j).ptPlot
+        next
+
+        b->SetBackColorA( pChart->bands(k).clr, cubyte( pChart->bands(k).nAlpha ) )
+        b->PaintPolygon( @pts(0), nHi + nLo, 0 )
+    next
+end sub
+
 private sub CHT_RenderAreaFills( byval pChart as PSCHART ptr, byval b as PsBufferPaint ptr )
     for i as long = 0 to pChart->seriesCount - 1
         if pChart->series(i).bVisible = false then continue for
@@ -857,9 +891,10 @@ private sub CHT_Render( byval pChart as PSCHART ptr, byval b as PsBufferPaint pt
         case PSCHART_TYPE_COLUMN : CHT_RenderColumn( pChart, b )
         case PSCHART_TYPE_HLOC   : CHT_RenderHloc( pChart, b )
         case else
-            ' STRICT Z-ORDER, and it is the whole reason these are three passes rather than
-            ' one loop: fills first, then every polyline over them, then the markers on top.
-            ' A band that covered the two lines it brackets would be worse than no band.
+            ' STRICT Z-ORDER, and it is the whole reason these are separate passes rather than
+            ' one loop: bands, then fills, then every polyline over both, then the markers on
+            ' top. A band that covered the two lines it brackets would be worse than no band.
+            CHT_RenderBands( pChart, b )
             CHT_RenderAreaFills( pChart, b )
             CHT_RenderLine( pChart, b )
         end select
@@ -1244,6 +1279,53 @@ function PsChart_ClearSeriesFill( byval hChart as HWND, byval series as integer 
     dim as PSCHART_SERIES ptr s = pChart->GetSeries( clng(series) )
     if s = 0 then return false
     s->bHasFill = false
+    pChart->Refresh()
+    return true
+end function
+
+function PsChart_SetSeriesBand( byval hChart as HWND, byval seriesLo as integer, byval seriesHi as integer, byval clrFill as COLORREF, byval nAlpha as long ) as boolean
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return false
+    dim as long iLo = clng(seriesLo)
+    dim as long iHi = clng(seriesHi)
+    if pChart->IsValidSeries( iLo ) = false then return false
+    if pChart->IsValidSeries( iHi ) = false then return false
+    ' A series banded against itself is a zero-area ribbon. Rejected rather than carried,
+    ' because it can only be a caller's slip and carrying it makes the slip invisible.
+    if iLo = iHi then return false
+    if nAlpha < 0 then nAlpha = 0
+    if nAlpha > 255 then nAlpha = 255
+
+    dim as long k = pChart->FindBand( iLo, iHi )
+    if k < 0 then
+        dim as long cap = ubound(pChart->bands) + 1
+        if pChart->bandCount >= cap then
+            redim preserve pChart->bands( 0 to iif( cap = 0, 8, cap * 2 ) - 1 )
+        end if
+        k = pChart->bandCount
+        pChart->bandCount += 1
+    end if
+    pChart->bands(k).iLo    = iLo
+    pChart->bands(k).iHi    = iHi
+    pChart->bands(k).clr    = clrFill
+    pChart->bands(k).nAlpha = nAlpha
+    pChart->Refresh()
+    return true
+end function
+
+' Removed by SWAPPING THE LAST ONE DOWN rather than shuffling the tail: bands have no
+' meaningful order -- they are all painted before every line -- so nothing can observe it.
+' Returns false when there was no band for that pair, which is how a host can tell a removal
+' from a no-op.
+function PsChart_ClearSeriesBand( byval hChart as HWND, byval seriesLo as integer, byval seriesHi as integer ) as boolean
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return false
+    dim as long k = pChart->FindBand( clng(seriesLo), clng(seriesHi) )
+    if k < 0 then return false
+    if k <> pChart->bandCount - 1 then
+        pChart->bands(k) = pChart->bands( pChart->bandCount - 1 )
+    end if
+    pChart->bandCount -= 1
     pChart->Refresh()
     return true
 end function

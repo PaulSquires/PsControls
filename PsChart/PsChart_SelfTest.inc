@@ -586,6 +586,127 @@ function PsChart_RunSelfTest( byval hWndParent as HWND ) as long
         end if
     end scope
 
+    ' --- a filled band between two series --------------------------------------------------------------------
+    ' Two FLAT series at known values over a fixed range, so "between them" and "outside them"
+    ' are pixel rows this test computes rather than recognises. That is the whole assertion: a
+    ' band that leaked past its own edges, or one that covered the lines it brackets, would
+    ' pass any check that only asked whether the picture changed.
+    scope
+        dim as HWND h = CHTTest_MakeChart( hWndParent, PSCHART_TYPE_LINE, 700, 400 )
+        if h <> 0 then
+            dim as PSCHART_COLORS clrs
+            PsChart_GetColors( h, @clrs )
+
+            dim as long sLo = PsChart_AddSeries( h, "lo" )
+            dim as long sHi = PsChart_AddSeries( h, "hi" )
+            for j as long = 0 to 9
+                PsChart_AddPoint( h, sLo, str(j), 30.0 )
+                PsChart_AddPoint( h, sHi, str(j), 70.0 )
+            next
+            PsChart_SetValueRange( h, 0.0, 100.0 )
+
+            dim as RECT rcPlot
+            PsChart_GetPlotRect( h, rcPlot )
+            dim as long yLo = PsChart_ValueToY( h, 30.0 )       ' lower on screen = larger y
+            dim as long yHi = PsChart_ValueToY( h, 70.0 )
+            dim as long xMid = (rcPlot.left + rcPlot.right) \ 2
+            dim as long yMid = (yHi + yLo) \ 2                   ' squarely between the two
+            dim as long yAbove = (rcPlot.top + yHi) \ 2          ' above the high series
+            dim as long yBelow = (yLo + rcPlot.bottom) \ 2       ' below the low series
+
+            dim as COLORREF cMidBefore   = PsChart_GetRenderedPixel( h, xMid, yMid )
+            dim as long     inkBefore    = PsChart_CountPlotInkPixels( h, clrs.PlotBackColor )
+
+            dim as boolean bSet = PsChart_SetSeriesBand( h, sLo, sHi, BGR(255,170,0), 110 )
+
+            dim as COLORREF cMid   = PsChart_GetRenderedPixel( h, xMid, yMid )
+            dim as COLORREF cAbove = PsChart_GetRenderedPixel( h, xMid, yAbove )
+            dim as COLORREF cBelow = PsChart_GetRenderedPixel( h, xMid, yBelow )
+            dim as long     inkAfter = PsChart_CountPlotInkPixels( h, clrs.PlotBackColor )
+
+            CHTTest_Check( "Band: setting one over two valid series succeeds", bSet, "set=" & str(bSet) )
+            CHTTest_Check( "Band: a pixel BETWEEN the two series is filled", _
+                           (cMid <> cMidBefore) andalso (cMid <> clrs.PlotBackColor), _
+                           "y=" & str(yMid) & " was=" & hex(cMidBefore) & " now=" & hex(cMid) )
+            CHTTest_Check( "Band: a pixel ABOVE the high series is untouched", _
+                           (cAbove = clrs.PlotBackColor), _
+                           "y=" & str(yAbove) & " got=" & hex(cAbove) )
+            CHTTest_Check( "Band: a pixel BELOW the low series is untouched", _
+                           (cBelow = clrs.PlotBackColor), _
+                           "y=" & str(yBelow) & " got=" & hex(cBelow) )
+            CHTTest_Check( "Band: the fill is translucent, not the flat colour asked for", _
+                           (cMid <> BGR(255,170,0)), _
+                           "got=" & hex(cMid) & " opaque would be " & hex(BGR(255,170,0)) )
+            ' HOW FAR ALONG X the ribbon runs. A polyline starts at the first category's slot
+            ' CENTRE and ends at the last one's, not at the plot's edges, so the band's extent
+            ' is derived from the vertices rather than from rcPlot.
+            dim as RECT rcP0, rcP9
+            PsChart_GetPointRect( h, sHi, 0, rcP0 )
+            PsChart_GetPointRect( h, sHi, 9, rcP9 )
+            dim as long xFirst = (rcP0.left + rcP0.right) \ 2
+            dim as long xLast  = (rcP9.left + rcP9.right) \ 2
+
+            CHTTest_Check( "Band: it reaches the first vertex", _
+                           (PsChart_GetRenderedPixel( h, xFirst + 3, yMid ) = cMid), _
+                           "x=" & str(xFirst + 3) )
+            CHTTest_Check( "Band: it reaches the last vertex", _
+                           (PsChart_GetRenderedPixel( h, xLast - 3, yMid ) = cMid), _
+                           "x=" & str(xLast - 3) )
+            CHTTest_Check( "Band: it stops there -- the plot left of the first vertex is clear", _
+                           (PsChart_GetRenderedPixel( h, xFirst - 8, yMid ) = clrs.PlotBackColor), _
+                           "x=" & str(xFirst - 8) & " got=" & hex(PsChart_GetRenderedPixel( h, xFirst - 8, yMid )) )
+
+            ' And it is a solid ribbon, not an outline or a sliver. The bound is 80% of the
+            ' rectangle the band must contain, deliberately loose in ONE direction only:
+            ' gridlines and the two series had already inked part of that area before the band
+            ' arrived, so those pixels cannot be "gained" twice, and the edges antialias.
+            dim as long areaMin = clng( (xLast - xFirst) * (yLo - yHi) * 0.8 )
+            CHTTest_Check( "Band: it fills the whole ribbon, not a sliver of it", _
+                           (inkAfter - inkBefore) >= areaMin, _
+                           "gained=" & str(inkAfter - inkBefore) & " need>=" & str(areaMin) )
+
+            ' THE Z-ORDER CLAIM. The two lines must still be on top of the band they bracket.
+            ' Sampled ON the high series' own row, which must be neither the band's tint nor
+            ' the background -- it must be the series' pen.
+            dim as COLORREF cOnLine = PsChart_GetRenderedPixel( h, xMid, yHi )
+            CHTTest_Check( "Band: the bracketed lines are drawn OVER the band, not under it", _
+                           (cOnLine <> cMid) andalso (cOnLine <> clrs.PlotBackColor), _
+                           "online=" & hex(cOnLine) & " band=" & hex(cMid) )
+
+            ' Identity is the PAIR, in either order.
+            PsChart_SetSeriesBand( h, sLo, sHi, BGR(0,255,0), 110 )
+            CHTTest_Check( "Band: re-setting the same pair replaces it rather than stacking", _
+                           (PsChart_GetRenderedPixel( h, xMid, yMid ) <> cMid), "replaced" )
+            CHTTest_Check( "Band: clearing takes the pair in the opposite order", _
+                           PsChart_ClearSeriesBand( h, sHi, sLo ), "cleared" )
+            CHTTest_Check( "Band: clearing puts the background back exactly", _
+                           (PsChart_GetRenderedPixel( h, xMid, yMid ) = cMidBefore), _
+                           "now=" & hex(PsChart_GetRenderedPixel( h, xMid, yMid )) )
+            CHTTest_Check( "Band: clearing one that is not there reports false", _
+                           (PsChart_ClearSeriesBand( h, sHi, sLo ) = false), "no-op" )
+            CHTTest_Check( "Band: a series banded against itself is rejected", _
+                           (PsChart_SetSeriesBand( h, sLo, sLo, BGR(255,0,0), 128 ) = false), _
+                           "rejected" )
+            CHTTest_Check( "Band: an out-of-range series is rejected and does not fault", _
+                           (PsChart_SetSeriesBand( h, sLo, 99, BGR(255,0,0), 128 ) = false), _
+                           "rejected" )
+
+            ' A hidden edge suppresses the band but must not destroy it -- unhiding brings the
+            ' same picture back, or a legend click would silently eat the host's setup.
+            PsChart_SetSeriesBand( h, sLo, sHi, BGR(255,170,0), 110 )
+            PsChart_SetSeriesVisible( h, sHi, false )
+            dim as COLORREF cHidden = PsChart_GetRenderedPixel( h, xMid, yMid )
+            PsChart_SetSeriesVisible( h, sHi, true )
+            dim as COLORREF cRestored = PsChart_GetRenderedPixel( h, xMid, yMid )
+            CHTTest_Check( "Band: hiding an edge suppresses the band", _
+                           (cHidden <> cMid), "hidden=" & hex(cHidden) )
+            CHTTest_Check( "Band: unhiding it brings the same band back", _
+                           (cRestored = cMid), "restored=" & hex(cRestored) & " want=" & hex(cMid) )
+
+            DestroyWindow( h )
+        end if
+    end scope
+
     dim as string sSum = "===== " & str(gCHT_TestCount) & " checks, " & str(gCHT_FailCount) & " failed ====="
     print sSum
     return gCHT_FailCount
