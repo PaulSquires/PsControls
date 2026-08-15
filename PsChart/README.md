@@ -252,6 +252,8 @@ Destroy it with `DestroyWindow`; the control frees its own state and tooltip.
 | `PsChart_SetSeriesColor( hChart, iSeries, clr ) as boolean` | Overrides the palette for this series. |
 | `PsChart_ClearSeriesColor( hChart, iSeries ) as boolean` | Drops the override; the series goes back to palette entry `iSeries mod 10`. |
 | `PsChart_SetSeriesLineWidth( hChart, iSeries, nWidth ) as boolean` | Line-chart pen width in raw pixels. Clamped to a minimum of 1. |
+| `PsChart_SetSeriesLineStyle( hChart, series, nStyle ) as boolean` | Breaks a **line** series' stroke: one of the `CHT_LINE_*` constants. Column and HLOC charts ignore it. An unrecognised style is stored as `CHT_LINE_SOLID`, so what you read back is always something that draws. |
+| `PsChart_GetSeriesLineStyle( hChart, series ) as long` | `CHT_LINE_SOLID` for a bad index as well as for an unstyled series. |
 | `PsChart_SetSeriesSymbol( hChart, iSeries, nSymbol, nSize = 6 ) as boolean` | A `CHT_SYM_*` marker at every vertex of a line series. `nSize` is clamped to a minimum of 2. |
 | `PsChart_SetSeriesSmooth( hChart, iSeries, bSmooth ) as boolean` | Draws the series as a cardinal spline instead of straight segments. A spline can overshoot its own data points; it is clipped to the plot. |
 | `PsChart_SetSeriesVisible( hChart, iSeries, bVisible ) as boolean` | Hiding a series removes it from the **axis range** as well as from the drawing, so hiding an outlier rescales the chart. Also clears the hot point if it was in that series. |
@@ -401,14 +403,15 @@ Passing 0 to any of these removes the callback.
 
 ### Render probes
 
-Both render the control offscreen through the **same** function `WM_PAINT` uses, then read the
-resulting pixels on a fixed 32×32 sample grid. They exist so a regression check measures what is
-actually drawn rather than a parallel implementation of it. Neither touches the screen.
+These render the control offscreen through the **same** function `WM_PAINT` uses, then read the
+resulting pixels back. They exist so a regression check measures what is actually drawn rather
+than a parallel implementation of it. None of them touches the screen.
 
 | Function | Behaviour |
 |---|---|
-| `PsChart_CountRenderedTones( hChart ) as long` | How many distinct colours appear in the sample, capped at 64. A useful "did anything get drawn" check: an empty chart still returns at least its background and its gridlines, and adding data raises the count. |
+| `PsChart_CountRenderedTones( hChart ) as long` | How many distinct colours appear on a fixed 32×32 sample grid, capped at 64. A useful "did anything get drawn" check: an empty chart still returns at least its background and its gridlines, and adding data raises the count. |
 | `PsChart_HashRenderedPart( hChart ) as ulong` | An FNV-1a hash of the same sample. Identical state hashes identically; any visible change to the sampled pixels changes it. |
+| `PsChart_CountPlotInkPixels( hChart, clrBack ) as long` | How many pixels inside the plot rect are **not** `clrBack` — the series' ink, when you pass the plot background. Every pixel of the rect, not a sample grid, because a 32×32 grid is far too coarse to see a dash pattern. That makes it a *test* probe: it costs one `GetPixel` per plot pixel and has no business near a repaint. |
 
 Both return 0 if the control has no client area yet.
 
@@ -568,7 +571,13 @@ data under the cursor does not fire it. It fires *after* the state is updated, s
 `CHT_SYM_NONE` (the default), `CHT_SYM_CIRCLE`, `CHT_SYM_SQUARE`, `CHT_SYM_DIAMOND`,
 `CHT_SYM_TRIANGLE`.
 
-### Legend position
+### Line styles
+
+`CHT_LINE_SOLID` (the default), `CHT_LINE_DASH`, `CHT_LINE_DOT`, `CHT_LINE_DASHDOT`. Line series
+only. The dash lengths are in **pen-width units**, so one style reads the same at 1 px and at 3 px,
+and the patterns favour the gap over the dash — a dashed series has to be distinguishable from a
+solid one at the 1–2 px a chart series actually uses. Use this rather than a second colour when
+the two runs are the same quantity: a forecast drawn in a different colour reads as different data.
 
 `CHT_LEGEND_BOTTOM` (the default), `CHT_LEGEND_TOP`, `CHT_LEGEND_LEFT`, `CHT_LEGEND_RIGHT`.
 Top and bottom lay the entries out in one row; left and right in a column.

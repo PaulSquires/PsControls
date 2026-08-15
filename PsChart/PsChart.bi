@@ -84,6 +84,18 @@ enum
     CHT_SYM_TRIANGLE
 end enum
 
+' How a LINE series' stroke is broken. SOLID is the default and every existing chart keeps it.
+'
+' This exists so a forecast can be told apart from the actual data WITHOUT spending a colour
+' on it -- the two runs are the same quantity and giving them different colours says they are
+' different quantities. Column and HLOC charts ignore it: there is no polyline to break.
+enum
+    CHT_LINE_SOLID = 0
+    CHT_LINE_DASH
+    CHT_LINE_DOT
+    CHT_LINE_DASHDOT
+end enum
+
 ' Which edge the legend takes. TOP/BOTTOM lay the entries out in a row, LEFT/RIGHT in a
 ' column, and the block is measured before the plot rect is carved so the plot never has to
 ' shrink twice.
@@ -194,6 +206,7 @@ type PSCHART_SERIES
     bHasColor  as boolean
     SeriesColor as COLORREF
     nLineWidth as long = PSCHART_DEFAULT_LINEWIDTH    ' raw px; the caller scales
+    nLineStyle as long = CHT_LINE_SOLID               ' line series only
     nSymbol    as long = CHT_SYM_NONE
     nSymbolSize as long = PSCHART_DEFAULT_SYMBOLSIZE
     bSmooth    as boolean = false     ' cardinal spline instead of straight segments
@@ -519,6 +532,7 @@ function PSCHART.AddSeries() as long
         .bHasColor   = false
         .SeriesColor = 0
         .nLineWidth  = PSCHART_DEFAULT_LINEWIDTH
+        .nLineStyle  = CHT_LINE_SOLID
         .nSymbol     = CHT_SYM_NONE
         .nSymbolSize = PSCHART_DEFAULT_SYMBOLSIZE
         .bSmooth     = false
@@ -1223,6 +1237,10 @@ declare function PsChart_SetSeriesColor( byval hChart as HWND, byval iSeries as 
 ' Drop an explicit series colour and go back to the palette entry for that index.
 declare function PsChart_ClearSeriesColor( byval hChart as HWND, byval iSeries as long ) as boolean
 declare function PsChart_SetSeriesLineWidth( byval hChart as HWND, byval iSeries as long, byval nWidth as long ) as boolean
+' LINE SERIES ONLY -- a column or HLOC chart has no polyline to break and ignores it. One of
+' the CHT_LINE_* constants; an unrecognised one is stored as CHT_LINE_SOLID.
+declare function PsChart_SetSeriesLineStyle( byval hChart as HWND, byval series as integer, byval nStyle as long ) as boolean
+declare function PsChart_GetSeriesLineStyle( byval hChart as HWND, byval series as integer ) as long
 declare function PsChart_SetSeriesSymbol( byval hChart as HWND, byval iSeries as long, byval nSymbol as long, byval nSize as long = PSCHART_DEFAULT_SYMBOLSIZE ) as boolean
 declare function PsChart_SetSeriesSmooth( byval hChart as HWND, byval iSeries as long, byval bSmooth as boolean ) as boolean
 ' A hidden series is excluded from the AXIS RANGE as well as from the drawing, so hiding the
@@ -1351,5 +1369,11 @@ declare sub      PsChart_SetHotChangeCallback( byval hChart as HWND, byval userf
 ' screen does -- PsDatePicker once shipped a probe that passed while the painter drew a flat
 ' rectangle, and that is the failure these are shaped to make impossible.
 declare function PsChart_CountRenderedTones( byval hChart as HWND ) as long
+' Count the pixels inside the PLOT RECT that are NOT clrBack -- the series' ink, in other
+' words, when clrBack is the plot's own background. Every pixel of the rect, not a sample
+' grid: this answers "how much of the line got drawn", and a 32x32 grid over a plot is far
+' too coarse to see a dash pattern at all. Its cost is a GetPixel per plot pixel, so it
+' belongs in a test and nowhere near a repaint.
+declare function PsChart_CountPlotInkPixels( byval hChart as HWND, byval clrBack as COLORREF ) as long
 declare function PsChart_HashRenderedPart( byval hChart as HWND ) as ulong
 declare function PsChart_RunSelfTest( byval hWndParent as HWND ) as long

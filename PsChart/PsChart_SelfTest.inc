@@ -455,6 +455,74 @@ function PsChart_RunSelfTest( byval hWndParent as HWND ) as long
         end if
     end scope
 
+    ' --- per-series line style -------------------------------------------------------------------------------
+    ' The whole claim being tested is "a dashed series is distinguishable from a solid one at
+    ' the width a chart actually uses", and the only honest measurement of that is the ink:
+    ' identical geometry, fewer set pixels. A hash comparison would only prove the picture
+    ' changed, which a colour change would prove equally well.
+    scope
+        dim as HWND h = CHTTest_MakeChart( hWndParent, PSCHART_TYPE_LINE, 700, 400 )
+        if h <> 0 then
+            dim as PSCHART_COLORS clrs
+            PsChart_GetColors( h, @clrs )
+
+            dim as long s = PsChart_AddSeries( h, "s" )
+            ' A zig-zag rather than a ramp: a dash pattern that only ever met one slope would
+            ' not exercise the join, and the joins are where a dashed polyline goes wrong.
+            for j as long = 0 to 11
+                PsChart_AddPoint( h, s, str(j), iif( (j mod 2) = 0, 10.0, 40.0 ) )
+            next
+            PsChart_SetSeriesLineWidth( h, s, 2 )
+
+            dim as boolean bDefSolid = (PsChart_GetSeriesLineStyle( h, s ) = CHT_LINE_SOLID)
+
+            ' Geometry must not move. Captured before the style changes and compared after,
+            ' because "fewer pixels" only means "dashed" if the line is in the same place.
+            dim as RECT rcBefore
+            PsChart_GetPointRect( h, s, 5, rcBefore )
+
+            dim as long inkSolid = PsChart_CountPlotInkPixels( h, clrs.PlotBackColor )
+
+            PsChart_SetSeriesLineStyle( h, s, CHT_LINE_DASH )
+            dim as long inkDash = PsChart_CountPlotInkPixels( h, clrs.PlotBackColor )
+
+            PsChart_SetSeriesLineStyle( h, s, CHT_LINE_DOT )
+            dim as long inkDot = PsChart_CountPlotInkPixels( h, clrs.PlotBackColor )
+
+            PsChart_SetSeriesLineStyle( h, s, CHT_LINE_DASHDOT )
+            dim as long inkDashDot = PsChart_CountPlotInkPixels( h, clrs.PlotBackColor )
+
+            dim as RECT rcAfter
+            PsChart_GetPointRect( h, s, 5, rcAfter )
+
+            CHTTest_Check( "LineStyle: a new series defaults to solid", bDefSolid, _
+                           "default=" & str(CHT_LINE_SOLID) )
+            CHTTest_Check( "LineStyle: a dashed series draws less ink than the solid one", _
+                           (inkDash < inkSolid) andalso (inkDash > 0), _
+                           "solid=" & str(inkSolid) & " dash=" & str(inkDash) )
+            CHTTest_Check( "LineStyle: a dotted series draws less ink again", _
+                           (inkDot < inkDash) andalso (inkDot > 0), _
+                           "dash=" & str(inkDash) & " dot=" & str(inkDot) )
+            CHTTest_Check( "LineStyle: dash-dot lands between dot and dash", _
+                           (inkDashDot > inkDot) andalso (inkDashDot < inkSolid), _
+                           "dot=" & str(inkDot) & " dashdot=" & str(inkDashDot) & " solid=" & str(inkSolid) )
+            CHTTest_Check( "LineStyle: the style does not move the geometry", _
+                           EqualRect( @rcBefore, @rcAfter ) <> 0, _
+                           CHTTest_RectStr(rcBefore) & " vs " & CHTTest_RectStr(rcAfter) )
+
+            PsChart_SetSeriesLineStyle( h, s, 999 )
+            CHTTest_Check( "LineStyle: an unrecognised style is stored as solid", _
+                           (PsChart_GetSeriesLineStyle( h, s ) = CHT_LINE_SOLID), _
+                           "style=" & str(PsChart_GetSeriesLineStyle( h, s )) )
+            CHTTest_Check( "LineStyle: an out-of-range series answers solid and does not fault", _
+                           (PsChart_SetSeriesLineStyle( h, 99, CHT_LINE_DASH ) = false) andalso _
+                           (PsChart_GetSeriesLineStyle( h, 99 ) = CHT_LINE_SOLID), _
+                           "rejected" )
+
+            DestroyWindow( h )
+        end if
+    end scope
+
     dim as string sSum = "===== " & str(gCHT_TestCount) & " checks, " & str(gCHT_FailCount) & " failed ====="
     print sSum
     return gCHT_FailCount

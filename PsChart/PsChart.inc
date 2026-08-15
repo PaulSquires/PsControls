@@ -437,6 +437,18 @@ private sub CHT_RenderSymbol( byval b as PsBufferPaint ptr, byval nSymbol as lon
     end select
 end sub
 
+' CHT_LINE_* is the chart's vocabulary and PS_PENDASH_* is the buffer's. They are deliberately
+' two enums rather than one shared constant: PsBufferPaint is vendored into every control in
+' the family and must not grow a dependency on a chart's idea of what a line style is.
+private function CHT_DashForLineStyle( byval nStyle as long ) as long
+    select case nStyle
+    case CHT_LINE_DASH    : return PS_PENDASH_DASH
+    case CHT_LINE_DOT     : return PS_PENDASH_DOT
+    case CHT_LINE_DASHDOT : return PS_PENDASH_DASHDOT
+    case else             : return PS_PENDASH_SOLID
+    end select
+end function
+
 private sub CHT_RenderLine( byval pChart as PSCHART ptr, byval b as PsBufferPaint ptr )
     for i as long = 0 to pChart->seriesCount - 1
         if pChart->series(i).bVisible = false then continue for
@@ -451,11 +463,16 @@ private sub CHT_RenderLine( byval pChart as PSCHART ptr, byval b as PsBufferPain
         next
 
         b->SetPenColor( clrSer )
+        ' Set per series and put back to solid immediately after, rather than once around the
+        ' whole loop: the buffer's pen state outlives this function, and a chart whose LAST
+        ' series happened to be dashed would otherwise hand a dashed pen to whatever drew next.
+        b->SetPenDashStyle( CHT_DashForLineStyle( pChart->series(i).nLineStyle ) )
         if pChart->series(i).bSmooth then
             b->PaintCurve( @pts(0), n, pChart->series(i).nLineWidth )
         else
             b->PaintPolyline( @pts(0), n, pChart->series(i).nLineWidth )
         end if
+        b->SetPenDashStyle( PS_PENDASH_SOLID )
 
         if pChart->series(i).nSymbol <> CHT_SYM_NONE then
             for j as long = 0 to n - 1
@@ -1163,6 +1180,32 @@ function PsChart_SetSeriesLineWidth( byval hChart as HWND, byval iSeries as long
     return true
 end function
 
+' An unrecognised style is STORED AS SOLID rather than rejected, so Get always answers with
+' something the renderer can actually draw and a host cannot read back a value that would
+' paint nothing.
+function PsChart_SetSeriesLineStyle( byval hChart as HWND, byval series as integer, byval nStyle as long ) as boolean
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return false
+    dim as PSCHART_SERIES ptr s = pChart->GetSeries( clng(series) )
+    if s = 0 then return false
+    select case nStyle
+    case CHT_LINE_DASH, CHT_LINE_DOT, CHT_LINE_DASHDOT
+        s->nLineStyle = nStyle
+    case else
+        s->nLineStyle = CHT_LINE_SOLID
+    end select
+    pChart->Refresh()
+    return true
+end function
+
+function PsChart_GetSeriesLineStyle( byval hChart as HWND, byval series as integer ) as long
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return CHT_LINE_SOLID
+    dim as PSCHART_SERIES ptr s = pChart->GetSeries( clng(series) )
+    if s = 0 then return CHT_LINE_SOLID
+    return s->nLineStyle
+end function
+
 function PsChart_SetSeriesSymbol( byval hChart as HWND, byval iSeries as long, byval nSymbol as long, byval nSize as long = PSCHART_DEFAULT_SYMBOLSIZE ) as boolean
     dim as PSCHART ptr pChart = GetChartPointer( hChart )
     if pChart = 0 then return false
@@ -1835,6 +1878,29 @@ function PsChart_CountRenderedTones( byval hChart as HWND ) as long
         next
     next
     return nSeen
+end function
+
+function PsChart_CountPlotInkPixels( byval hChart as HWND, byval clrBack as COLORREF ) as long
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return 0
+
+    dim as PsBufferPaint b
+    dim as RECT rc
+    if CHT_RenderOffscreen( pChart, @b, rc ) = false then return 0
+    dim as HDC hdc = b.getMemDC()
+    if hdc = 0 then return 0
+
+    ' rcPlot is only trustworthy after the render above ran the layout.
+    dim as RECT rcp = pChart->rcPlot
+    if IntersectRect( @rcp, @rcp, @rc ) = 0 then return 0
+
+    dim as long n = 0
+    for y as long = rcp.top to rcp.bottom - 1
+        for x as long = rcp.left to rcp.right - 1
+            if GetPixel( hdc, x, y ) <> clrBack then n += 1
+        next
+    next
+    return n
 end function
 
 function PsChart_HashRenderedPart( byval hChart as HWND ) as ulong
