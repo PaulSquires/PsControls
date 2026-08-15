@@ -217,7 +217,10 @@ fonts fall back to the label font.
 ## Behaviour and limits
 
 - **The chart type cannot change** after `PsChart_Create`.
-- **Column charts are grouped only.** There is no stacked mode and no horizontal (bar) orientation.
+- **Column charts are grouped or stacked** (`PsChart_SetColumnMode`), but there is no horizontal
+  (bar) orientation. Stacking scales the axis to the stack totals, and totals positives and
+  negatives separately — a category holding both reads as two piles meeting at zero, not as one
+  pile that cancels itself out.
 - **Area fills and bands paint under every line.** `PsChart_SetSeriesFill` fills between a line
   series and the value baseline; `PsChart_SetSeriesBand` fills the ribbon between two line series,
   which is how a projection shows an uncertainty *range* rather than two unrelated forecast lines.
@@ -341,7 +344,9 @@ The control also honours `WM_SETFONT` / `WM_GETFONT`, which set and read the lab
 
 | Function | Behaviour |
 |---|---|
-| `PsChart_SetBarGap( hChart, nGap )` | Raw pixels between bars **within** one category group. Clamped at 0. |
+| `PsChart_SetColumnMode( hChart, nMode ) as boolean` | `CHT_COL_GROUPED` (the default) or `CHT_COL_STACKED`. An unrecognised mode falls back to grouped. Stacking rescales the value axis to the **stack totals**; hit testing and `PsChart_GetPointRect` follow the segments, because they read the same rects the renderer draws. |
+| `PsChart_GetColumnMode( hChart ) as long` | `CHT_COL_GROUPED` for a handle that is not a chart. |
+| `PsChart_SetBarGap( hChart, nGap )` | Raw pixels between bars **within** one category group. Ignored when stacked — a stack is one bar however many series are piled up it. Clamped at 0. |
 | `PsChart_SetGroupGapPercent( hChart, nPct )` | Percent of each category slot left empty between groups. Clamped 0…90. Default 25. |
 
 A bar narrower than one pixel is drawn as a one-pixel hairline rather than vanishing — the chart
@@ -589,6 +594,11 @@ data under the cursor does not fire it. It fires *after* the state is updated, s
 
 `CHT_SYM_NONE` (the default), `CHT_SYM_CIRCLE`, `CHT_SYM_SQUARE`, `CHT_SYM_DIAMOND`,
 `CHT_SYM_TRIANGLE`.
+
+### Column mode
+
+`CHT_COL_GROUPED` (the default) and `CHT_COL_STACKED`. Column charts only — HLOC, pie and line
+ignore it. A stacked line chart is an area chart; the way to that here is `PsChart_SetSeriesFill`.
 
 ### Line styles
 

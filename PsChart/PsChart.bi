@@ -84,6 +84,21 @@ enum
     CHT_SYM_TRIANGLE
 end enum
 
+' How a COLUMN chart arranges the series within one category.
+'
+'   GROUPED  side by side, one slot divided between them. The default, and what every
+'            existing column chart has always drawn.
+'   STACKED  one bar per category, the series piled up it. Positives stack UP from the
+'            baseline and negatives stack DOWN from it, so a category holding both reads as
+'            two piles meeting at zero rather than as one pile that cancels itself out.
+'
+' HLOC and pie ignore it; a line chart ignores it too (a stacked line is an area chart, and
+' the way to that here is PsChart_SetSeriesFill).
+enum
+    CHT_COL_GROUPED = 0
+    CHT_COL_STACKED
+end enum
+
 ' How a LINE series' stroke is broken. SOLID is the default and every existing chart keeps it.
 '
 ' This exists so a forecast can be told apart from the actual data WITHOUT spending a colour
@@ -430,6 +445,7 @@ type PSCHART
     ' --- column ---------------------------------------------------------------------------
     nBarGap        as long          ' DPI-scaled at Create
     nGroupGapPct   as long = PSCHART_DEFAULT_GROUPGAPPCT
+    nColumnMode    as long = CHT_COL_GROUPED
 
     ' --- HLOC -----------------------------------------------------------------------------
     nHlocTick      as long          ' DPI-scaled at Create
@@ -502,6 +518,10 @@ type PSCHART
     ' only because the axis charts and the pie share none of it, not because either is
     ' independently callable -- both assume LayoutChart has already resolved the rects.
     declare sub      LayoutPoints()
+    ' The stacked-column path. Split out because it is the one layout that has to run
+    ' CATEGORY-outer and series-inner -- a segment's position depends on what was stacked
+    ' below it, which the ordinary series-outer loop has no way to know.
+    declare sub      LayoutStackedColumns()
     declare sub      LayoutPieSlices()
     ' What slice iPt's label says, per nPieLabelMode. Called by BOTH layout (to measure it)
     ' and the renderer (to draw it) -- one function, so the string that was measured is
@@ -717,6 +737,43 @@ sub PSCHART.ResolveRange()
 
     dim as double rawMin = 0.0, rawMax = 0.0
     dim as boolean bAny = false
+
+    ' A STACKED COLUMN CHART IS SCALED BY ITS TOTALS, not by its tallest single value. Scaling
+    ' to the largest point would put every stack off the top of the plot, which is the one
+    ' failure a stacked chart cannot survive.
+    '
+    ' Positives and negatives are totalled SEPARATELY, because that is how they are drawn: a
+    ' category holding +5 and -5 needs a range covering both, not a net total of zero that
+    ' would clip the two bars it actually draws.
+    if (this.nChartType = PSCHART_TYPE_COLUMN) andalso (this.nColumnMode = CHT_COL_STACKED) then
+        dim as long nCat = this.CategoryCount()
+        for j as long = 0 to nCat - 1
+            dim as double sumPos = 0.0, sumNeg = 0.0
+            for i as long = 0 to this.seriesCount - 1
+                if this.series(i).bVisible = false then continue for
+                if j >= this.series(i).pointCount then continue for
+                dim as double v = this.series(i).points(j).Value
+                if v >= 0.0 then sumPos += v else sumNeg += v
+            next
+            if bAny = false then
+                rawMin = sumNeg : rawMax = sumPos : bAny = true
+            else
+                if sumNeg < rawMin then rawMin = sumNeg
+                if sumPos > rawMax then rawMax = sumPos
+            end if
+        next
+        if rawMin > 0.0 then rawMin = 0.0
+        if rawMax < 0.0 then rawMax = 0.0
+
+        dim as double fLoS, fHiS, fSS
+        CHT_NiceRange( rawMin, rawMax, this.nTickHint, fLoS, fHiS, fSS )
+        this.fMin = fLoS
+        this.fMax = fHiS
+        this.fStep = fSS
+        this.nResDecimals = iif( this.nDecimals = PSCHART_DECIMALS_AUTO, _
+                                 CHT_AutoDecimals(fSS), this.nDecimals )
+        exit sub
+    end if
 
     for i as long = 0 to this.seriesCount - 1
         if this.series(i).bVisible = false then continue for
@@ -1021,8 +1078,84 @@ end sub
 ' renderer's job (PsBufferPaint.SetClipRect), not layout's, because a line entering and
 ' leaving the top of the plot must still be drawn through the part that is visible.
 ' ========================================================================================
+' ----------------------------------------------------------------------------------------
+' STACKED COLUMNS. One bar per category, the visible series piled up it.
+'
+' CATEGORY-outer and series-inner, which is the whole reason this is not folded into
+' LayoutPoints: a segment starts where the segment below it ended, and the ordinary
+' series-outer loop has no place to carry that running total.
+'
+' The rects written here are the SAME ones the hit test and PsChart_GetPointRect read, so a
+' click inside segment 2 answers segment 2 for free -- there is no second set of numbers that
+' could disagree.
+' ----------------------------------------------------------------------------------------
+sub PSCHART.LayoutStackedColumns()
+    ' Hidden series get EMPTY rects rather than stale ones, exactly as the grouped path does:
+    ' the hit test walks every point of every series and a leftover rect would keep answering.
+    for i as long = 0 to this.seriesCount - 1
+        if this.series(i).bVisible then continue for
+        for j as long = 0 to this.series(i).pointCount - 1
+            SetRectEmpty( @this.series(i).points(j).rc )
+            this.series(i).points(j).ptPlot.x = 0
+            this.series(i).points(j).ptPlot.y = 0
+        next
+    next
+
+    dim as long gap = this.nGroupGapPct
+    if gap < 0 then gap = 0
+    if gap > 90 then gap = 90
+    ' The whole slot less the group gap, undivided: a stack is ONE bar however many series
+    ' are piled up it, so nBarGap and the visible-series count play no part here.
+    dim as single groupW = this.fSlotWidth * (1.0 - csng(gap) / 100.0)
+
+    for j as long = 0 to this.nCatCount - 1
+        dim as long cx = this.SlotCenterX( j )
+        dim as long bl = clng( csng(cx) - groupW / 2.0 )
+        dim as long br = clng( csng(cx) + groupW / 2.0 )
+        if br <= bl then br = bl + 1
+
+        ' The two running totals, in VALUE space rather than pixels. Accumulating pixels
+        ' instead would round once per segment and let a tall stack drift off its own total.
+        dim as double accPos = 0.0, accNeg = 0.0
+
+        for i as long = 0 to this.seriesCount - 1
+            if this.series(i).bVisible = false then continue for
+            if j >= this.series(i).pointCount then continue for
+            dim as PSCHART_POINT ptr p = @this.series(i).points(j)
+
+            dim as long yFrom, yTo
+            if p->Value >= 0.0 then
+                yFrom = this.ValueToY( accPos )
+                accPos += p->Value
+                yTo = this.ValueToY( accPos )
+            else
+                yFrom = this.ValueToY( accNeg )
+                accNeg += p->Value
+                yTo = this.ValueToY( accNeg )
+            end if
+
+            p->rc.left  = bl
+            p->rc.right = br
+            if yTo <= yFrom then
+                p->rc.top = yTo : p->rc.bottom = yFrom
+            else
+                p->rc.top = yFrom : p->rc.bottom = yTo
+            end if
+            ' ptPlot is the segment's OUTER edge -- the end it grew to, not the end it grew
+            ' from -- so a hot highlight anchors where the value actually landed.
+            p->ptPlot.x = (bl + br) \ 2
+            p->ptPlot.y = yTo
+        next
+    next
+end sub
+
 sub PSCHART.LayoutPoints()
     dim as long nVis = this.VisibleSeriesCount()
+
+    if (this.nChartType = PSCHART_TYPE_COLUMN) andalso (this.nColumnMode = CHT_COL_STACKED) then
+        this.LayoutStackedColumns()
+        exit sub
+    end if
 
     ' Column bar geometry is per-GROUP and identical for every category, so it is computed
     ' once here rather than per point.
@@ -1385,6 +1518,12 @@ declare sub      PsChart_SetSubtitleFont( byval hChart as HWND, byval hFont as H
 declare sub      PsChart_SetBarGap( byval hChart as HWND, byval nGap as long )
 ' Percent of each category slot left empty BETWEEN groups. Clamped 0..90.
 declare sub      PsChart_SetGroupGapPercent( byval hChart as HWND, byval nPct as long )
+' CHT_COL_GROUPED (the default) or CHT_COL_STACKED. Column charts only -- accepted and stored
+' on any chart, but only a column chart reads it. Stacking rescales the value axis to the
+' STACK TOTALS, and the hit test and PsChart_GetPointRect follow the segments automatically:
+' they read the rects this produces and there is no second set of numbers to disagree.
+declare function PsChart_SetColumnMode( byval hChart as HWND, byval nMode as long ) as boolean
+declare function PsChart_GetColumnMode( byval hChart as HWND ) as long
 
 ' --- HLOC ---------------------------------------------------------------------------------------
 declare sub      PsChart_SetHlocTickWidth( byval hChart as HWND, byval nWidth as long )

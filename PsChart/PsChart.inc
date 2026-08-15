@@ -1283,6 +1283,22 @@ function PsChart_ClearSeriesFill( byval hChart as HWND, byval series as integer 
     return true
 end function
 
+function PsChart_SetColumnMode( byval hChart as HWND, byval nMode as long ) as boolean
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return false
+    ' Unrecognised falls back to GROUPED rather than being rejected: that is the mode every
+    ' column chart already draws, so a bad value costs a caller nothing it had.
+    pChart->nColumnMode = iif( nMode = CHT_COL_STACKED, CHT_COL_STACKED, CHT_COL_GROUPED )
+    pChart->Refresh()
+    return true
+end function
+
+function PsChart_GetColumnMode( byval hChart as HWND ) as long
+    dim as PSCHART ptr pChart = GetChartPointer( hChart )
+    if pChart = 0 then return CHT_COL_GROUPED
+    return pChart->nColumnMode
+end function
+
 function PsChart_SetSeriesBand( byval hChart as HWND, byval seriesLo as integer, byval seriesHi as integer, byval clrFill as COLORREF, byval nAlpha as long ) as boolean
     dim as PSCHART ptr pChart = GetChartPointer( hChart )
     if pChart = 0 then return false

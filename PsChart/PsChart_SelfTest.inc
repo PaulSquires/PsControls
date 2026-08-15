@@ -707,6 +707,151 @@ function PsChart_RunSelfTest( byval hWndParent as HWND ) as long
         end if
     end scope
 
+    ' --- stacked columns --------------------------------------------------------------------------------------
+    scope
+        dim as HWND h = CHTTest_MakeChart( hWndParent, PSCHART_TYPE_COLUMN, 700, 400 )
+        if h <> 0 then
+            ' Three series over four categories. The totals differ per category on purpose,
+            ' so a range taken from the tallest SINGLE value could not accidentally be right.
+            dim as double v(0 to 2, 0 to 3) = { _
+                    { 2, 5, 1, 3 }, _
+                    { 4, 2, 6, 1 }, _
+                    { 3, 1, 2, 8 } }
+            dim as double totals(0 to 3) = { 9, 8, 9, 12 }
+            for i as long = 0 to 2
+                dim as long s = PsChart_AddSeries( h, "s" & str(i) )
+                for j as long = 0 to 3
+                    PsChart_AddPoint( h, s, "c" & str(j), v(i, j) )
+                next
+            next
+
+            CHTTest_Check( "Stacked: a column chart defaults to grouped", _
+                           (PsChart_GetColumnMode( h ) = CHT_COL_GROUPED), _
+                           "mode=" & str(PsChart_GetColumnMode( h )) )
+
+            ' Grouped first, so the stacked numbers below are compared against a real before.
+            dim as RECT rcG0, rcG1
+            PsChart_GetPointRect( h, 0, 3, rcG0 )
+            PsChart_GetPointRect( h, 1, 3, rcG1 )
+            dim as boolean bSideBySide = (rcG0.right <= rcG1.left)
+
+            PsChart_SetColumnMode( h, CHT_COL_STACKED )
+            CHTTest_Check( "Stacked: the mode reads back", _
+                           (PsChart_GetColumnMode( h ) = CHT_COL_STACKED), "mode=stacked" )
+
+            dim as double fLo, fHi
+            PsChart_GetValueRange( h, fLo, fHi )
+            ' The tallest single value is 8 and the tallest STACK is 12. A range that stopped
+            ' short of 12 would draw a stack running off the top of its own plot.
+            CHTTest_Check( "Stacked: the axis scales to the stack total, not the tallest bar", _
+                           (fHi >= 12.0), "max=" & str(fHi) & " tallest stack=12 tallest bar=8" )
+            CHTTest_Check( "Stacked: the axis still includes zero", (fLo <= 0.0), "min=" & str(fLo) )
+
+            ' Category 3: segments of 3, 1 and 8 piled up from the baseline.
+            dim as RECT rc0, rc1, rc2
+            PsChart_GetPointRect( h, 0, 3, rc0 )
+            PsChart_GetPointRect( h, 1, 3, rc1 )
+            PsChart_GetPointRect( h, 2, 3, rc2 )
+
+            CHTTest_Check( "Stacked: grouped really was side by side, so this is a change", _
+                           bSideBySide, "grouped " & CHTTest_RectStr(rcG0) & " " & CHTTest_RectStr(rcG1) )
+            CHTTest_Check( "Stacked: every segment of a category shares one bar's width", _
+                           (rc0.left = rc1.left) andalso (rc1.left = rc2.left) andalso _
+                           (rc0.right = rc1.right) andalso (rc1.right = rc2.right), _
+                           CHTTest_RectStr(rc0) & " " & CHTTest_RectStr(rc1) & " " & CHTTest_RectStr(rc2) )
+            CHTTest_Check( "Stacked: the first segment stands on the baseline", _
+                           (rc0.bottom = PsChart_ValueToY( h, 0.0 )), _
+                           "bottom=" & str(rc0.bottom) & " origin=" & str(PsChart_ValueToY( h, 0.0 )) )
+            ' CONTIGUOUS, to the pixel. A gap or an overlap here is the classic stacked-bar
+            ' defect and it is invisible at a glance.
+            CHTTest_Check( "Stacked: segment 2 starts exactly where segment 1 ended", _
+                           (rc1.bottom = rc0.top), _
+                           "s1.top=" & str(rc0.top) & " s2.bottom=" & str(rc1.bottom) )
+            CHTTest_Check( "Stacked: segment 3 starts exactly where segment 2 ended", _
+                           (rc2.bottom = rc1.top), _
+                           "s2.top=" & str(rc1.top) & " s3.bottom=" & str(rc2.bottom) )
+            CHTTest_Check( "Stacked: the top of the stack is the total's own pixel row", _
+                           (rc2.top = PsChart_ValueToY( h, totals(3) )), _
+                           "top=" & str(rc2.top) & " want=" & str(PsChart_ValueToY( h, totals(3) )) )
+
+            ' HIT TESTING NAMES THE SEGMENT, not the stack. Sampled at each segment's own
+            ' vertical middle, which is arithmetic on the rects above and not a guess.
+            dim as long xMid = (rc1.left + rc1.right) \ 2
+            dim as long iSer, iPt
+            dim as boolean bHit1 = PsChart_HitTest( h, xMid, (rc1.top + rc1.bottom) \ 2, iSer, iPt )
+            CHTTest_Check( "Stacked: a click in the middle segment names the middle series", _
+                           bHit1 andalso (iSer = 1) andalso (iPt = 3), _
+                           "series=" & str(iSer) & " point=" & str(iPt) )
+            dim as boolean bHit2 = PsChart_HitTest( h, xMid, (rc2.top + rc2.bottom) \ 2, iSer, iPt )
+            CHTTest_Check( "Stacked: a click in the top segment names the top series", _
+                           bHit2 andalso (iSer = 2) andalso (iPt = 3), _
+                           "series=" & str(iSer) & " point=" & str(iPt) )
+            dim as boolean bHit0 = PsChart_HitTest( h, xMid, rc0.bottom - 2, iSer, iPt )
+            CHTTest_Check( "Stacked: a click just above the baseline names the bottom series", _
+                           bHit0 andalso (iSer = 0) andalso (iPt = 3), _
+                           "series=" & str(iSer) & " point=" & str(iPt) )
+
+            ' A hidden series must leave the stack AND the range, not just stop drawing --
+            ' the same rule the grouped path already keeps.
+            PsChart_SetSeriesVisible( h, 2, false )
+            dim as double fLo2, fHi2
+            PsChart_GetValueRange( h, fLo2, fHi2 )
+            dim as RECT rcH1
+            PsChart_GetPointRect( h, 1, 3, rcH1 )
+            CHTTest_Check( "Stacked: hiding a series shrinks the axis to the new totals", _
+                           (fHi2 < fHi), "was=" & str(fHi) & " now=" & str(fHi2) )
+            CHTTest_Check( "Stacked: the survivors close up rather than leaving a hole", _
+                           (rcH1.bottom = PsChart_ValueToY( h, v(0, 3) )), _
+                           "bottom=" & str(rcH1.bottom) & " want=" & str(PsChart_ValueToY( h, v(0, 3) )) )
+            PsChart_SetSeriesVisible( h, 2, true )
+
+            CHTTest_Check( "Stacked: an unrecognised mode falls back to grouped", _
+                           PsChart_SetColumnMode( h, 77 ) andalso _
+                           (PsChart_GetColumnMode( h ) = CHT_COL_GROUPED), "grouped" )
+
+            DestroyWindow( h )
+        end if
+    end scope
+
+    ' Negatives stack DOWN from the baseline while positives stack up, so a category holding
+    ' both reads as two piles meeting at zero instead of one pile that cancels itself out.
+    scope
+        dim as HWND h = CHTTest_MakeChart( hWndParent, PSCHART_TYPE_COLUMN, 700, 400 )
+        if h <> 0 then
+            dim as long s0 = PsChart_AddSeries( h, "up" )
+            dim as long s1 = PsChart_AddSeries( h, "down" )
+            dim as long s2 = PsChart_AddSeries( h, "up2" )
+            PsChart_AddPoint( h, s0, "c0",  4.0 )
+            PsChart_AddPoint( h, s1, "c0", -6.0 )
+            PsChart_AddPoint( h, s2, "c0",  3.0 )
+            PsChart_SetColumnMode( h, CHT_COL_STACKED )
+
+            dim as long yZero = PsChart_ValueToY( h, 0.0 )
+            dim as RECT rcUp, rcDown, rcUp2
+            PsChart_GetPointRect( h, s0, 0, rcUp )
+            PsChart_GetPointRect( h, s1, 0, rcDown )
+            PsChart_GetPointRect( h, s2, 0, rcUp2 )
+
+            CHTTest_Check( "Stacked negatives: the positive segment sits above the baseline", _
+                           (rcUp.bottom = yZero) andalso (rcUp.top < yZero), _
+                           CHTTest_RectStr(rcUp) & " zero=" & str(yZero) )
+            CHTTest_Check( "Stacked negatives: the negative segment hangs below it", _
+                           (rcDown.top = yZero) andalso (rcDown.bottom > yZero), _
+                           CHTTest_RectStr(rcDown) & " zero=" & str(yZero) )
+            CHTTest_Check( "Stacked negatives: the second positive stacks on the first, not on zero", _
+                           (rcUp2.bottom = rcUp.top), _
+                           "up.top=" & str(rcUp.top) & " up2.bottom=" & str(rcUp2.bottom) )
+
+            dim as double fLo, fHi
+            PsChart_GetValueRange( h, fLo, fHi )
+            CHTTest_Check( "Stacked negatives: the range covers both piles, not their net", _
+                           (fHi >= 7.0) andalso (fLo <= -6.0), _
+                           "min=" & str(fLo) & " max=" & str(fHi) & " net would be -1" )
+
+            DestroyWindow( h )
+        end if
+    end scope
+
     dim as string sSum = "===== " & str(gCHT_TestCount) & " checks, " & str(gCHT_FailCount) & " failed ====="
     print sSum
     return gCHT_FailCount
