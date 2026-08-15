@@ -7,10 +7,10 @@
 #pragma once
 
 ' ========================================================================================
-' The demo is a SPECIMEN SHEET, not an application: a 2x3 grid where every cell is one
-' chart configured differently, with a caption above it saying which. Four of the six
-' reproduce the reference screenshots this control was drawn from; the other two show the
-' options those four do not use.
+' The demo is a SPECIMEN SHEET, not an application: a grid where every cell is one chart
+' configured differently, with a caption above it saying which. Four of them reproduce the
+' reference screenshots this control was drawn from; the rest show the options those four
+' do not use.
 '
 ' The whole sheet is re-themed LIGHT through PsChart_SetColors, because the control's own
 ' defaults are the family's dark palette and the references are white. That is deliberate
@@ -26,6 +26,7 @@ enum
     CHART_PIE               ' the reference pie, value labels inside
     CHART_DOUGHNUT          ' doughnut + exploded slice + name/percent labels on leaders
     CHART_NEGATIVE          ' columns straddling zero, and a spline series with symbols
+    CHART_FORECAST          ' dashed forecast, area fill, and an uncertainty band
     CHART_COUNT
 end enum
 

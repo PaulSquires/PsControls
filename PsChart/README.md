@@ -30,6 +30,11 @@ columns, 60 HLOC bars with the date labels auto-skipped, a pie with its values i
 a doughnut with one slice exploded and name/percent labels on leader lines, and columns straddling
 zero.
 
+The demo carries a seventh cell that this image predates — a forecast chart combining all three
+of the additive line options: an area fill under the recorded months, a dashed forecast continuing
+in **the same colour** as the actual data, and an uncertainty band between two dotted bounds that
+opens where the record stops.
+
 ## Requirements
 
 | File | Why |
